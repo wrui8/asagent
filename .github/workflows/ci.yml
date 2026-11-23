@@ -40,3 +40,8 @@ jobs:
           grep -E '^(FAILED|ERROR) ' pytest.log | head -10 | while IFS= read -r line; do
             echo "::error title=pytest::$line"
           done || true
+          {
+            grep -A12 -m1 "ERROR collecting" pytest.log || tail -n 15 pytest.log
+          } | head -13 | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error title=pytest-trace::${line:0:900}"
+          done || true
