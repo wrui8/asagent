@@ -24,4 +24,16 @@ jobs:
         run: uv run ruff check .
 
       - name: Test
-        run: uv run pytest -q
+        run: |
+          set -o pipefail
+          uv run pytest -q 2>&1 | tee pytest.log
+
+      - name: Publish failure summary
+        if: failure()
+        run: |
+          {
+            echo "## Test failure"
+            echo '```'
+            tail -n 150 pytest.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
