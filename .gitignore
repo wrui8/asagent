@@ -6,8 +6,8 @@ __pycache__/
 # 密钥
 .env
 
-# 运行时产物
-runtime/
+# 运行时产物（仅项目根目录，避免误伤 src/asagent/runtime/）
+/runtime/
 data/*.sqlite3
 data/*.db
 data/*.db-wal
