@@ -37,3 +37,6 @@ jobs:
             tail -n 150 pytest.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(FAILED|ERROR) ' pytest.log | head -10 | while IFS= read -r line; do
+            echo "::error title=pytest::$line"
+          done || true
