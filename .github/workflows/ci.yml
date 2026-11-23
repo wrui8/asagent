@@ -45,3 +45,6 @@ jobs:
           } | head -13 | while IFS= read -r line; do
             [ -n "$line" ] && echo "::error title=pytest-trace::${line:0:900}"
           done || true
+          grep -E "^E +" pytest.log | head -10 | while IFS= read -r line; do
+            echo "::error title=pytest-error::${line:0:900}"
+          done || true
