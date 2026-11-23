@@ -69,3 +69,7 @@ ignore = ["E501", "UP046"]
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+
+[tool.ruff.lint.isort]
+# 显式声明第一方包，避免不同检出环境下将 asagent.* 误判为第三方导致 I001 不稳定
+known-first-party = ["asagent"]
