@@ -1,0 +1,31 @@
+name: rag
+description: 企业知识库问答助手（只读 Markdown 文档，本地 bge 向量检索）
+system_prompt_file: prompt.md
+
+model_policy:
+  default: deepseek-chat
+  local_first: qwen2.5-7b-awq
+  escalate_to: deepseek-chat
+  max_escalations: 2
+
+tools:
+  - list_docs
+  - search_docs
+  - read_doc
+
+permissions:
+  max_level: 0
+
+context:
+  max_input_tokens: 3200
+  max_tool_output_chars: 6000
+  keep_last_turns: 6
+
+eval_suite: evals/rag/golden.jsonl
+require_tool_before_final: true
+
+tool_config:
+  docs_dir: data/docs
+  index_db: data/rag.sqlite3
+  embedding_model: ${AS_EMBEDDING_MODEL:-D:/fishmatrix-llm/models/bge-base-zh-v1.5}
+  top_k: 5

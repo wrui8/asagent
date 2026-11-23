@@ -1,0 +1,23 @@
+name: assistant
+description: 通用助手（工具来自外部 MCP server）
+model_policy:
+  default: deepseek-chat
+  local_first: qwen2.5-7b-awq
+  escalate_to: deepseek-chat
+  max_escalations: 2
+# 本场景不内置工具，全部由 MCP server 在运行时提供
+tools: []
+permissions:
+  max_level: 0
+context:
+  max_input_tokens: 3000
+  max_tool_output_chars: 4000
+  keep_last_turns: 6
+tool_config:
+  mcp_servers:
+    - name: demo
+      command: python
+      args: [scripts/mcp_demo_server.py]
+      timeout_s: 30
+      # 外部工具默认只读；需要写入的 server 可把 permission 调到 1/2 走审批
+      permission: 0

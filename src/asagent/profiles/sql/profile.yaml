@@ -1,0 +1,27 @@
+name: sql
+description: 企业数据分析助手（只读 SQLite 演示库）
+system_prompt_file: prompt.md
+
+model_policy:
+  default: deepseek-chat
+  local_first: qwen2.5-7b-awq
+  escalate_to: deepseek-chat
+  max_escalations: 2
+
+tools:
+  - list_tables
+  - describe_table
+  - run_sql
+
+permissions:
+  max_level: 0
+
+context:
+  max_input_tokens: 3200
+  max_tool_output_chars: 6000
+  keep_last_turns: 6
+
+eval_suite: evals/sql/golden.jsonl
+
+tool_config:
+  db_path: data/demo.sqlite3

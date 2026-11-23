@@ -1,0 +1,79 @@
+# 模型与 provider 注册表
+# 密钥只写环境变量名，真实值放 .env
+# pricing 单位为「元 / 百万 token」，为相对成本参考值，以各厂商官网为准
+
+version: 1
+
+providers:
+  local:
+    kind: openai_compat
+    base_url: ${VLLM_BASE_URL:-http://127.0.0.1:8000/v1}
+    api_key_env: VLLM_API_KEY
+    timeout_s: 120
+  deepseek:
+    kind: openai_compat
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    timeout_s: 120
+  # 可选 provider，未配置 DASHSCOPE_API_KEY 时路由会自动跳过
+  dashscope:
+    kind: openai_compat
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    timeout_s: 120
+
+models:
+  qwen2.5-7b-awq:
+    provider: local
+    upstream_name: qwen2.5-7b-awq
+    tier: local
+    context_window: 4096
+    max_output_tokens: 768
+    supports_tools: true
+    pricing: {input_per_mtok: 0, output_per_mtok: 0, currency: CNY}
+
+  deepseek-chat:
+    provider: deepseek
+    upstream_name: deepseek-chat
+    tier: strong
+    context_window: 65536
+    max_output_tokens: 4096
+    supports_tools: true
+    pricing: {input_per_mtok: 2, output_per_mtok: 8, currency: CNY}
+
+  # 推理模型不支持工具循环，只用于无工具的规划/评审
+  deepseek-reasoner:
+    provider: deepseek
+    upstream_name: deepseek-reasoner
+    tier: strong
+    context_window: 65536
+    max_output_tokens: 8192
+    supports_tools: false
+    pricing: {input_per_mtok: 4, output_per_mtok: 16, currency: CNY}
+
+  qwen-turbo:
+    provider: dashscope
+    upstream_name: qwen-turbo
+    tier: fast
+    context_window: 131072
+    max_output_tokens: 8192
+    supports_tools: true
+    pricing: {input_per_mtok: 0.3, output_per_mtok: 0.6, currency: CNY}
+
+  qwen-plus:
+    provider: dashscope
+    upstream_name: qwen-plus
+    tier: strong
+    context_window: 131072
+    max_output_tokens: 8192
+    supports_tools: true
+    pricing: {input_per_mtok: 0.8, output_per_mtok: 2, currency: CNY}
+
+  qwen-max:
+    provider: dashscope
+    upstream_name: qwen-max
+    tier: strong
+    context_window: 131072
+    max_output_tokens: 8192
+    supports_tools: true
+    pricing: {input_per_mtok: 2.4, output_per_mtok: 9.6, currency: CNY}

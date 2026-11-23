@@ -1,0 +1,23 @@
+name: office
+description: 办公助手（文档读写、CSV 修改；写操作需人工审批并自动备份）
+system_prompt_file: prompt.md
+model_policy:
+  default: deepseek-chat
+  local_first: qwen2.5-7b-awq
+  escalate_to: deepseek-chat
+  max_escalations: 2
+tools:
+  - list_files
+  - read_document
+  - write_document
+  - update_csv_cell
+  - delete_document
+permissions:
+  max_level: 2
+context:
+  max_input_tokens: 2800
+  max_tool_output_chars: 6000
+  keep_last_turns: 6
+eval_suite: evals/office/golden.jsonl
+tool_config:
+  backup_dir: runtime/backups

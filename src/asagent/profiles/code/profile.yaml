@@ -1,0 +1,32 @@
+name: code
+description: 研发助手（Docker 沙箱内读改代码、跑单元测试）
+system_prompt_file: prompt.md
+
+model_policy:
+  default: deepseek-chat
+  local_first: qwen2.5-7b-awq
+  escalate_to: deepseek-chat
+  max_escalations: 2
+
+tools:
+  - list_files
+  - read_file
+  - write_file
+  - run_tests
+
+permissions:
+  max_level: 1
+
+context:
+  max_input_tokens: 2800
+  max_tool_output_chars: 6000
+  keep_last_turns: 6
+
+eval_suite: evals/code/golden.jsonl
+final_requires_tools:
+  - write_file
+  - run_tests
+
+tool_config:
+  sandbox_image: python:3.12-slim
+  sandbox_timeout_s: 90
