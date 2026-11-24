@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from ... import __version__
 from ...config import AppConfig
 from ...profiles.loader import available_profiles, load_profile
 from ..config import WebSettings
@@ -21,6 +22,18 @@ router = APIRouter(prefix="/api", tags=["system"])
 @router.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@router.get("/app/version")
+async def app_version(settings: WebSettings = Depends(get_settings)) -> dict:
+    """移动端版本检查（公开）：低于 min_supported 时客户端要求强制更新。"""
+    latest = settings.app_latest_version.strip() or __version__
+    return {
+        "latest": latest,
+        "min_supported": settings.app_min_version.strip() or latest,
+        "android_url": settings.app_android_url.strip(),
+        "notes": settings.app_release_notes.strip(),
+    }
 
 
 @router.get("/profiles")
