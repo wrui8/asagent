@@ -15,6 +15,11 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchMCPServers, fetchProfiles, fetchSystemInfo } from "../lib/api";
 import { errorMessage } from "../lib/errors";
 import { profileLabel } from "../lib/format";
+import {
+  checkDesktopUpdate,
+  installDesktopUpdate,
+  IS_TAURI,
+} from "../lib/platform";
 import { useAuth } from "../stores/auth";
 import { Empty } from "../components/Empty";
 import { KpiCard } from "../components/KpiCard";
@@ -25,6 +30,57 @@ export function System() {
   const me = useAuth((s) => s.user);
   const navigate = useNavigate();
   const [profile, setProfile] = useState("");
+  const [update, setUpdate] = useState<{
+    checking: boolean;
+    installing: boolean;
+    message: string;
+    version?: string;
+  }>({ checking: false, installing: false, message: "" });
+
+  const handleCheckUpdate = async () => {
+    setUpdate({ checking: true, installing: false, message: "正在检查…" });
+    try {
+      const info = await checkDesktopUpdate();
+      setUpdate(
+        info
+          ? {
+              checking: false,
+              installing: false,
+              message: `发现新版本 ${info.version}`,
+              version: info.version,
+            }
+          : { checking: false, installing: false, message: "当前已是最新版本" },
+      );
+    } catch (error) {
+      setUpdate({
+        checking: false,
+        installing: false,
+        message: errorMessage(error),
+      });
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    setUpdate((prev) => ({
+      ...prev,
+      installing: true,
+      message: "正在下载并安装，完成后应用会自动退出…",
+    }));
+    try {
+      await installDesktopUpdate();
+      setUpdate((prev) => ({
+        ...prev,
+        installing: false,
+        message: "安装程序已启动，请按提示完成更新。",
+      }));
+    } catch (error) {
+      setUpdate((prev) => ({
+        ...prev,
+        installing: false,
+        message: errorMessage(error),
+      }));
+    }
+  };
 
   const infoQuery = useQuery({
     queryKey: ["system", "info"],
@@ -364,6 +420,43 @@ export function System() {
                 </p>
               </div>
             </div>
+
+            {IS_TAURI ? (
+              <div className="card card-pad hud">
+                <div className="row" style={{ gap: 10, marginBottom: 8 }}>
+                  <RefreshCw size={16} style={{ color: "var(--cyan)" }} />
+                  <span style={{ fontWeight: 700, fontSize: 13 }}>
+                    桌面客户端更新
+                  </span>
+                  <div className="spacer" />
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => void handleCheckUpdate()}
+                    disabled={update.checking || update.installing}
+                  >
+                    {update.checking ? "检查中…" : "检查更新"}
+                  </button>
+                </div>
+                {update.version ? (
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => void handleInstallUpdate()}
+                    disabled={update.installing}
+                  >
+                    {update.installing
+                      ? "安装中…"
+                      : `安装 ${update.version}`}
+                  </button>
+                ) : null}
+                <p
+                  className="hint"
+                  style={{ margin: update.message ? "8px 0 0" : 0 }}
+                >
+                  {update.message ||
+                    "从 GitHub Release 获取签名更新包；安装后应用会自动退出并重启。"}
+                </p>
+              </div>
+            ) : null}
 
             <div className="card card-pad hud">
               <div className="row" style={{ gap: 10, marginBottom: 8 }}>

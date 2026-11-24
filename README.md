@@ -293,7 +293,9 @@ cd e2e && npm ci && npx playwright test    # 独立 8179 端口 + 临时库，�
 | `docker` | 构建生产镜像（含 RAG）；main 推送时发布 `ghcr.io/wrui8/asagent:latest` 与 `sha-*`，PR 仅校验 |
 
 `.github/workflows/release.yml` 在推送 `v*` tag（或手动触发）时用 `windows-latest`
-构建 Tauri NSIS 安装包，作为 artifact 上传并附到 GitHub Release。
+构建 Tauri NSIS 安装包与签名更新包，并生成 `latest.json` 附到 GitHub Release；
+已安装的桌面端可在系统页检查更新。移动端启动时通过 `/api/app/version` 提示新版本。
+签名密钥与版本配置见 [docs/deploy.md](docs/deploy.md#发布安装包windows--android)。
 
 ### 维护流程（分支 → PR → 更新镜像）
 
@@ -308,16 +310,16 @@ git push -u origin feat/<topic>     # 2. 推分支并开 PR（gh pr create）
 # 4. CI 在 main 上构建并推送镜像到 ghcr.io；本机自动拉取
 ```
 
-合并后镜像更新有两条路：
+合并后拉取镜像：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File deploy\pull-update.ps1   # 立即拉 GHCR 镜像并重启
-Get-ScheduledTask ASAgentAutoUpdate                              # 每 10 分钟自动轮询（digest 变化才重启）
+powershell -ExecutionPolicy Bypass -File deploy\pull-update.ps1   # 拉 GHCR 镜像 → 重启 → 健康检查
 ```
 
-- 自动任务 `ASAgentAutoUpdate` 每 10 分钟对比本地与 GHCR 的镜像 digest，有变化才
-  `compose up -d`；健康检查失败会回滚到上一镜像，日志在 `runtime/auto-update.log`
+- 镜像更新是手动的：脚本对比本地与 GHCR 的镜像 digest，没变化会直接返回
 - 回滚/固定版本：`deploy\pull-update.ps1 -Image ghcr.io/wrui8/asagent:sha-abc1234`
+- 如需定时轮询，可自行用任务计划程序以 **SYSTEM** 账号运行
+  `deploy\windows\auto-update.ps1`；默认不注册，避免交互式会话周期性弹出控制台窗口
 - 离网或需要本地改动时，仍可用源码构建：`deploy\update.ps1`（镜像 tag 为
   `asagent-api:local`，不会覆盖 GHCR 的 `latest`）
 

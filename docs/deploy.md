@@ -102,7 +102,7 @@ Dockerfile 不再依赖 `docker/dockerfile` 外部前端镜像，基础镜像为
 `agent.woaiwyj.xin` 指向 `http://127.0.0.1:8080`。
 
 ```powershell
-# 注册计划任务：登录启动栈 + 每日 03:17 备份 + 每 10 分钟拉取镜像（需管理员）
+# 注册计划任务：登录启动栈 + 每日 03:17 备份（需管理员）
 powershell -ExecutionPolicy Bypass -File deploy\windows\install-tasks.ps1
 
 # 把 cloudflared 装成 Windows 服务（需管理员；凭据只在脚本内引用，不回显）
@@ -172,14 +172,17 @@ powershell -ExecutionPolicy Bypass -File deploy\pull-update.ps1
 powershell -ExecutionPolicy Bypass -File deploy\pull-update.ps1 -Image ghcr.io/wrui8/asagent:sha-abc1234
 ```
 
-自动更新：`install-tasks.ps1` 会注册 `ASAgentAutoUpdate` 计划任务，每 10 分钟
-`docker compose pull` 一次，仅当本地镜像 digest 与 GHCR 不同才 `up -d`。健康检查
-失败会用上一镜像（`ghcr.io/wrui8/asagent:rollback`）重建并再次检查，日志在
-`runtime/auto-update.log`（超过 5 MB 轮转为 `.1`）。
+镜像更新默认是手动的：`install-tasks.ps1` 只注册开机启动与每日备份，不再注册
+`ASAgentAutoUpdate`（交互式会话下每 10 分钟会闪一次控制台窗口）。
+
+确实需要自动轮询时，用管理员 PowerShell 以 SYSTEM 账号注册
+`deploy\windows\auto-update.ps1`（对比 digest，变化才 `up -d`；健康检查失败会
+用 `ghcr.io/wrui8/asagent:rollback` 回滚；日志在 `runtime/auto-update.log`，超过
+5 MB 轮转为 `.1`），例如：
 
 ```powershell
-Get-ScheduledTask ASAgentAutoUpdate
-Get-Content runtime\auto-update.log -Tail 20
+schtasks /Create /TN ASAgentAutoUpdate /SC MINUTE /MO 10 /RU SYSTEM /RL HIGHEST `
+  /TR "powershell -NoProfile -ExecutionPolicy Bypass -File D:\code\AS\deploy\windows\auto-update.ps1"
 ```
 
 **包可见性**：`ghcr.io` 的镜像包默认可能是私有的，即使仓库公开。拉取报
@@ -187,7 +190,7 @@ Get-Content runtime\auto-update.log -Tail 20
 
 - 在 GitHub → 你的 Packages → `asagent` → Package settings 把可见性改为 **Public**；
 - 或本机 `docker login ghcr.io -u <用户名>`，密码填带 `read:packages` 的 PAT
-  （凭据存于 `%USERPROFILE%\.docker\config.json`，自动更新任务复用）。
+  （凭据存于 `%USERPROFILE%\.docker\config.json`，`pull-update.ps1` 复用）。
 
 **源码构建回退**（改本地代码、GHCR 不可用时）：
 
@@ -197,7 +200,7 @@ powershell -ExecutionPolicy Bypass -File deploy\update.ps1 -NoPull  # 跳过 git
 ```
 
 `update.ps1` 把镜像 tag 设为 `asagent-api:local`，不会覆盖 GHCR 的 `latest`，
-因此自动更新任务仍能正确识别远端新版本。切回镜像模式时执行一次
+因此下次 `pull-update.ps1` 仍能正确识别远端新版本。切回镜像模式时执行一次
 `docker compose -f deploy/docker-compose.yml pull` 即可。
 
 数据库结构由启动时的轻量迁移处理；升级前建议先跑一次备份。前端静态资源在镜像
@@ -205,17 +208,58 @@ powershell -ExecutionPolicy Bypass -File deploy\update.ps1 -NoPull  # 跳过 git
 
 ### 发布安装包（Windows / Android）
 
-推送 `v*` tag（例如 `v0.1.0`）触发 `.github/workflows/release.yml`：
+推送 `v*` tag（例如 `v0.1.1`）触发 `.github/workflows/release.yml`：
 
-- `build-windows`：`windows-latest` 构建 Tauri NSIS 安装包
+- `build-windows`：`windows-latest` 构建 Tauri NSIS 安装包与签名更新包
 - `build-android`：`ubuntu-latest` 用 Expo prebuild + Gradle 构建 release APK，
   再用 `apksigner` 签名
-- `publish`：汇总两个 artifact，挂到对应 tag 的 GitHub Release
+- `publish`：汇总 artifact，生成 `latest.json`，挂到对应 tag 的 GitHub Release
+
+tag 版本会自动写入 `desktop/src-tauri/tauri.conf.json` 与 `app/app.json`（去掉前缀
+`v`），无需手动改版本号。
 
 Android 签名材料只存放在本机（仓库之外），以 Repository Secrets 提供给 CI：
 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、
 `ANDROID_KEY_PASSWORD`。**签名密钥必须离线备份**，丢失后将无法覆盖升级已安装的
 应用。iOS 需要 macOS + Apple 签名，托管 runner 无法构建，暂不提供安装包。
+
+#### Windows 桌面自动更新
+
+Tauri updater 使用 minisign 密钥校验更新包。密钥已在本机生成：
+
+- 私钥：`%USERPROFILE%\.asagent\tauri-updater.key`（**保密并离线备份**，不要提交）
+- 公钥：`%USERPROFILE%\.asagent\tauri-updater.key.pub`，已写入
+  `desktop/src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`
+
+在 GitHub → Settings → Secrets and variables → Actions 添加：
+
+- `TAURI_SIGNING_PRIVATE_KEY`：私钥文件全文（用文本编辑器打开后整段复制）
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：生成密钥时设置的密码；本次生成的密钥没有
+  密码，可不添加
+
+首次发布前必须配置 `TAURI_SIGNING_PRIVATE_KEY`，否则 `build-windows` 会直接失败
+（避免产出无法自动更新的安装包）。
+
+发布后：
+
+- Release 资产包含 `*.exe`、`*.nsis.zip`、`*.nsis.zip.sig` 与 `latest.json`
+- 已安装客户端在「MCP 与系统」页点击「检查更新」；updater 读取
+  `https://github.com/wrui8/asagent/releases/latest/download/latest.json`，
+  校验签名后下载安装，应用退出并由安装程序完成升级
+- 更新源固定为 GitHub 最新 Release，回滚需发布更高版本的新 tag（或手动安装旧包）
+
+#### Android 版本提示
+
+`GET /api/app/version` 是公开接口，App 在启动时检查（仅 Android 弹窗）：
+
+```dotenv
+AS_APP_LATEST_VERSION=0.2.0      # 最新可用版本；留空取后端 __version__
+AS_APP_MIN_VERSION=0.1.0         # 最低支持版本；低于它强制更新，留空则不强制
+AS_APP_ANDROID_URL=https://github.com/wrui8/asagent/releases/latest
+AS_APP_RELEASE_NOTES=修复若干问题
+```
+
+版本比较只看 `major.minor.patch`；网络失败或接口不可用时保持静默，不阻塞启动。
 
 ## 6. 端到端测试（E2E）
 
@@ -248,7 +292,7 @@ npx playwright test          # 自动 seed 临时库并在 8179 端口起独立�
 | RAG 报模型找不到 | `BGE_MODEL_DIR` 是否挂到 `/models`；`AS_EMBEDDING_MODEL=/models/bge-base-zh-v1.5` |
 | 知识库有文档但检索不到 | 保存后需「重建索引」；看 `/api/kb/status` 的 stale 与任务 |
 | 拉镜像 `unauthorized` | GHCR 包可见性改为 Public，或 `docker login ghcr.io`（PAT 需 `read:packages`） |
-| 自动更新没生效 | `Get-ScheduledTask ASAgentAutoUpdate`；看 `runtime/auto-update.log`；Docker Desktop 是否在运行 |
+| 更新没生效 | 手动执行 `deploy\pull-update.ps1`；确认 CI 已发布新镜像、Docker Desktop 在运行 |
 
 Linux 差异：
 
@@ -266,7 +310,7 @@ Linux 差异：
 | --- | --- |
 | `deploy/Dockerfile` | 多阶段镜像（web 构建 + Python 运行时） |
 | `deploy/docker-compose.yml` | 端口、卷、环境、健康检查、日志轮转 |
-| `deploy/windows/*.ps1` | 自启、备份、每 10 分钟镜像更新任务、cloudflared 服务 |
+| `deploy/windows/*.ps1` | 自启、备份、cloudflared 服务（`auto-update.ps1` 为可选手动轮询脚本） |
 | `deploy/pull-update.ps1` | 拉取 GHCR 镜像、重启容器并做健康检查（支持 `-Image` 固定/回滚） |
 | `deploy/update.ps1` | 源码构建回退：`git pull` → 构建 `asagent-api:local` → 重启并健康检查 |
 | `deploy/linux/backup.sh` | Linux 备份入口 |

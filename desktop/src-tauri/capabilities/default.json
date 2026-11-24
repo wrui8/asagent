@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "asagent 桌面端默认能力",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:default"]
 }

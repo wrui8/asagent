@@ -1,3 +1,6 @@
+use serde::Serialize;
+use tauri_plugin_updater::UpdaterExt;
+
 /// Windows Credential Manager 中的服务名 / 用户名。
 const KEYRING_SERVICE: &str = "com.asagent.desktop";
 const KEYRING_USER: &str = "refresh_token";
@@ -54,14 +57,51 @@ fn clear_refresh_token() -> Result<(), String> {
     }
 }
 
+#[derive(Serialize)]
+struct DesktopUpdateInfo {
+    current_version: String,
+    version: String,
+    notes: Option<String>,
+}
+
+/// 检查 GitHub Release 的 latest.json；没有更新时返回 None。
+#[tauri::command]
+async fn check_desktop_update(
+    app: tauri::AppHandle,
+) -> Result<Option<DesktopUpdateInfo>, String> {
+    let updater = app.updater().map_err(|error| error.to_string())?;
+    let update = updater.check().await.map_err(|error| error.to_string())?;
+    Ok(update.map(|update| DesktopUpdateInfo {
+        current_version: update.current_version.to_string(),
+        version: update.version.clone(),
+        notes: update.body.clone(),
+    }))
+}
+
+/// 下载并安装更新；NSIS 安装程序接管后会退出当前进程。
+#[tauri::command]
+async fn install_desktop_update(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|error| error.to_string())?;
+    let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
+        return Ok(());
+    };
+    update
+        .download_and_install(|_chunk, _content_length| {}, || {})
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_api_base,
             store_refresh_token,
             load_refresh_token,
-            clear_refresh_token
+            clear_refresh_token,
+            check_desktop_update,
+            install_desktop_update
         ])
         .run(tauri::generate_context!())
         .expect("asagent desktop failed to start");

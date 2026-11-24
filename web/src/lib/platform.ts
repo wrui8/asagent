@@ -64,3 +64,21 @@ export async function saveDesktopRefreshToken(token: string | null): Promise<voi
     /* keyring 不可用时仅本次会话有效，不阻断登录流程 */
   }
 }
+
+export interface DesktopUpdateInfo {
+  current_version: string;
+  version: string;
+  notes?: string | null;
+}
+
+/** 桌面端检查 GitHub Release 的签名更新；Web 下返回 null。 */
+export async function checkDesktopUpdate(): Promise<DesktopUpdateInfo | null> {
+  if (!IS_TAURI) return null;
+  return invoke<DesktopUpdateInfo | null>("check_desktop_update");
+}
+
+/** 下载并安装更新；安装程序接管后应用会退出。 */
+export async function installDesktopUpdate(): Promise<void> {
+  if (!IS_TAURI) throw new Error("仅桌面客户端支持自动更新");
+  await invoke<void>("install_desktop_update");
+}
