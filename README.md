@@ -283,7 +283,7 @@ cd e2e && npm ci && npx playwright test    # 独立 8179 端口 + 临时库，�
 | `web` | `npm ci` → `typecheck` → `build` |
 | `app` | `npm ci` → `npx tsc --noEmit` |
 | `e2e` | 构建 web → 安装 Chromium → Playwright（失败上传报告） |
-| `docker` | 构建生产镜像校验 Dockerfile（含 RAG，不推送） |
+| `docker` | 构建生产镜像（含 RAG）；main 推送时发布 `ghcr.io/wrui8/asagent:latest` 与 `sha-*`，PR 仅校验 |
 
 `.github/workflows/release.yml` 在推送 `v*` tag（或手动触发）时用 `windows-latest`
 构建 Tauri NSIS 安装包，作为 artifact 上传并附到 GitHub Release。
@@ -298,11 +298,21 @@ git switch -c feat/<topic>          # 1. 从 main 拉分支
 # 开发、测试、提交
 git push -u origin feat/<topic>     # 2. 推分支并开 PR（gh pr create）
 # 3. PR 通过 CI 后合并到 main
-powershell -ExecutionPolicy Bypass -File deploy\update.ps1   # 4. 更新本机镜像并重启
+# 4. CI 在 main 上构建并推送镜像到 ghcr.io；本机自动拉取
 ```
 
-`deploy\update.ps1` 会校验在 `main` 且工作区干净、`git pull --ff-only`、重建镜像、
-重启容器并轮询 `/api/health`；`-NoPull` 可跳过 git 更新。
+合并后镜像更新有两条路：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\pull-update.ps1   # 立即拉 GHCR 镜像并重启
+Get-ScheduledTask ASAgentAutoUpdate                              # 每 10 分钟自动轮询（digest 变化才重启）
+```
+
+- 自动任务 `ASAgentAutoUpdate` 每 10 分钟对比本地与 GHCR 的镜像 digest，有变化才
+  `compose up -d`；健康检查失败会回滚到上一镜像，日志在 `runtime/auto-update.log`
+- 回滚/固定版本：`deploy\pull-update.ps1 -Image ghcr.io/wrui8/asagent:sha-abc1234`
+- 离网或需要本地改动时，仍可用源码构建：`deploy\update.ps1`（镜像 tag 为
+  `asagent-api:local`，不会覆盖 GHCR 的 `latest`）
 
 ## 评测基线
 
