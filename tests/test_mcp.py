@@ -23,6 +23,7 @@ from asagent.tools.mcp import (
     MCPManager,
     MCPServerConfig,
     MCPToolAdapter,
+    _resolve_launch,
     build_input_model,
     content_to_text,
     parse_server_configs,
@@ -127,6 +128,23 @@ def test_parse_server_configs_validates_shape():
         parse_server_configs({"name": "x"})
     configs = parse_server_configs([{"name": "demo", "command": "python"}])
     assert configs[0].permission == int(PermissionLevel.READ)
+
+
+def test_resolve_launch_uses_current_interpreter_for_python():
+    # 容器内 PATH 的 python 没有项目依赖；必须落到运行应用的解释器
+    cfg = MCPServerConfig(
+        name="demo", command="python", args=["scripts/mcp_demo_server.py"]
+    )
+    command, args = _resolve_launch(cfg, ROOT)
+    assert command == sys.executable
+    assert args == [str((ROOT / "scripts" / "mcp_demo_server.py").resolve())]
+
+
+def test_resolve_launch_keeps_explicit_binary():
+    cfg = MCPServerConfig(name="x", command="npx", args=["-y", "some-pkg"])
+    command, args = _resolve_launch(cfg, ROOT)
+    assert command == "npx"
+    assert args == ["-y", "some-pkg"]
 
 
 async def test_real_demo_server_roundtrip():

@@ -1311,7 +1311,7 @@ textarea.input {
   scroll-behavior: smooth;
 }
 .msg {
-  max-width: 840px;
+  max-width: 1120px;
   margin: 0 auto 22px;
   animation: rise 0.45s ease both;
 }
@@ -1435,7 +1435,7 @@ textarea.input {
 /* 审批 */
 .approval {
   position: relative;
-  max-width: 840px;
+  max-width: 1120px;
   margin: 0 auto 22px;
   border-radius: 14px;
   overflow: hidden;
@@ -1583,7 +1583,7 @@ textarea.input {
   background: rgba(255, 255, 255, 0.55);
 }
 .composer-inner {
-  max-width: 840px;
+  max-width: 1120px;
   margin: 0 auto;
   border: 1px solid var(--border2);
   border-radius: 14px;
@@ -1786,10 +1786,11 @@ textarea.input {
 }
 
 /* ========== 知识库编辑 ========== */
-.kb-editor textarea {
-  min-height: 300px;
+textarea.kb-editor {
+  min-height: 340px;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 13px;
+  line-height: 1.7;
 }
 .version-item {
   display: flex;

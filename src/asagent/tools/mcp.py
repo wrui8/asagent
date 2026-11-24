@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, Union
@@ -175,8 +176,15 @@ def _child_env(extra: dict[str, str]) -> dict[str, str]:
 
 
 def _resolve_launch(cfg: MCPServerConfig, root: Path | None) -> tuple[str, list[str]]:
-    """相对脚本路径按项目根解析，保证从任意 cwd 启动 CLI 都能找到 server。"""
+    """相对脚本路径按项目根解析，保证从任意 cwd 启动 CLI 都能找到 server。
+
+    ``python``/``python3`` 指向当前运行解释器而不是 PATH 里的系统 python：
+    容器内系统 python 没有项目依赖，直接拉起会因缺 ``mcp`` 立刻退出，
+    客户端只看到 ``Connection closed``。
+    """
     command = cfg.command
+    if command in {"python", "python3", "py"}:
+        command = sys.executable
     args = list(cfg.args)
     if root is not None:
         if not Path(command).is_absolute() and (root / command).is_file():

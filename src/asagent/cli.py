@@ -601,5 +601,33 @@ def web_init_admin(
     )
 
 
+@app.command("web-reset-password")
+def web_reset_password(
+    username: str = typer.Option(..., "--username", "-u", help="用户名"),
+    password: str | None = typer.Option(
+        None, "--password", "-p", help="新密码（省略则交互输入）"
+    ),
+) -> None:
+    """重置已有用户密码，并吊销该用户所有 refresh token。"""
+    from .api.db import WebDB
+    from .api.security import hash_password
+
+    config = load_config()
+    pwd = password or typer.prompt("新密码", hide_input=True, confirmation_prompt=True)
+    if len(pwd) < 12:
+        console.print("[red]密码至少 12 位[/red]")
+        raise typer.Exit(code=2)
+
+    web_db = WebDB(config.db_path)
+    user = web_db.get_user_with_hash(username)
+    if user is None:
+        console.print(f"[red]用户不存在[/red]：{username}")
+        raise typer.Exit(code=1)
+    web_db.update_user(user["id"], password_hash=hash_password(pwd))
+    # 旧 refresh token 必须失效，否则已登录的会话可继续续期
+    web_db.revoke_user_refreshes(user["id"])
+    console.print(f"[green]密码已重置[/green]：{user['username']}（{user['id']}）")
+
+
 if __name__ == "__main__":
     app()
