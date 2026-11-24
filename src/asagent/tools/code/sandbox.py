@@ -38,6 +38,51 @@ class SandboxResult:
     timed_out: bool = False
 
 
+PathMap = list[tuple[str, str]]
+
+# Docker Desktop（Windows）把宿主 named pipe 挂进 Linux 容器后是一个空目录，
+# 容器内 docker CLI 一定连不上宿主 daemon。命中时给出可操作的提示。
+_DAEMON_UNREACHABLE_MARKERS = (
+    "permission denied while trying to connect to the Docker daemon socket",
+    "Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+)
+
+DAEMON_HINT = (
+    "\n[提示] 当前部署环境无法访问 Docker daemon。Windows 的 Docker Desktop 不能把"
+    "宿主 named pipe 暴露为 Linux 容器内的 unix socket：请在宿主直跑 asagent，"
+    "或改用 Linux 宿主部署（真实 /var/run/docker.sock 可挂载）。"
+)
+
+
+def _daemon_hint(output: str) -> str | None:
+    """输出里出现连不上 daemon 的特征时返回运维提示，否则 None。"""
+    if any(marker in output for marker in _DAEMON_UNREACHABLE_MARKERS):
+        return DAEMON_HINT
+    return None
+
+
+def parse_path_map(raw: str | None) -> PathMap:
+    """解析 AS_SANDBOX_PATH_MAP：`容器前缀=宿主前缀`，逗号分隔多组。
+
+    容器部署时才需要：宿主 Docker daemon 解析的是宿主路径，而容器内
+    workspace 是容器路径，必须做前缀替换。宿主前缀统一转成正斜杠。
+    """
+    pairs: PathMap = []
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        container, sep, host = item.partition("=")
+        container = container.strip().rstrip("/")
+        host = host.strip().replace("\\", "/").rstrip("/")
+        if not sep or not container or not host:
+            raise ValueError(
+                f"AS_SANDBOX_PATH_MAP 格式错误：{item!r}（应为 容器前缀=宿主前缀）"
+            )
+        pairs.append((container, host))
+    return pairs
+
+
 def _tail(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -61,10 +106,12 @@ class DockerSandbox:
         test_command: list[str] | None = None,
         timeout_s: float = 90.0,
         max_output_chars: int = 8000,
+        path_map: PathMap | None = None,
     ):
         self.image = image
         self.workspace = workspace.resolve()
         self.tests_dir = tests_dir.resolve() if tests_dir else None
+        self.path_map = list(path_map or [])
         self._default_command = test_command
         self.timeout_s = timeout_s
         self.max_output_chars = max_output_chars
@@ -76,6 +123,14 @@ class DockerSandbox:
     @staticmethod
     def available() -> bool:
         return shutil.which("docker") is not None
+
+    def _host_path(self, path: Path) -> str:
+        """把容器内路径映射成宿主路径；未命中映射时原样返回 posix 路径。"""
+        text = path.as_posix()
+        for container, host in self.path_map:
+            if text == container or text.startswith(container + "/"):
+                return host + text[len(container) :]
+        return text
 
     def test_command(self) -> list[str]:
         if self._default_command:
@@ -105,10 +160,10 @@ class DockerSandbox:
             "-e",
             "PYTHONPATH=/workspace",
             "-v",
-            f"{self.workspace.as_posix()}:/workspace:rw",
+            f"{self._host_path(self.workspace)}:/workspace:rw",
         ]
         if self.tests_dir is not None:
-            args += ["-v", f"{self.tests_dir.as_posix()}:/tests:ro"]
+            args += ["-v", f"{self._host_path(self.tests_dir)}:/tests:ro"]
         args += ["-w", "/workspace", self.image]
         args += list(command or self.test_command())
         return args
@@ -144,10 +199,11 @@ class DockerSandbox:
             )
 
         code = proc.returncode if proc.returncode is not None else -1
-        return SandboxResult(
-            exit_code=code,
-            output=_tail(raw.decode("utf-8", "replace"), self.max_output_chars),
-        )
+        output = _tail(raw.decode("utf-8", "replace"), self.max_output_chars)
+        hint = _daemon_hint(output)
+        if hint:
+            output += hint
+        return SandboxResult(exit_code=code, output=output)
 
     async def _stop_container(self) -> None:
         """尽力停止容器；失败（已退出/被 --rm 删除）时忽略。"""

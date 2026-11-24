@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from asagent.config import AppConfig, load_config
 
@@ -20,3 +22,12 @@ def config(tmp_path: Path, project_root: Path) -> AppConfig:
     cfg.settings.as_artifacts_dir = str(tmp_path / "artifacts")
     cfg.settings.as_workspace_dir = str(tmp_path / "workspace")
     return cfg
+
+
+@pytest.fixture()
+def api_client(config: AppConfig) -> Iterator[TestClient]:
+    """带假 Agent 运行时的 FastAPI 测试客户端（会触发 lifespan）。"""
+    from api_helpers import make_client
+
+    with make_client(config) as client:
+        yield client

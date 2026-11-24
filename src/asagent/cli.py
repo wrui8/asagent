@@ -541,5 +541,65 @@ def demo(
     console.print(f"[green]演示数据库就绪[/green]：{path}")
 
 
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", "--host", help="监听地址"),
+    port: int = typer.Option(8000, "--port", help="监听端口"),
+) -> None:
+    """启动 Web API（单 worker：任务调度在进程内）。"""
+    import uvicorn
+
+    from .api.app import create_app
+    from .api.config import load_web_settings
+
+    config = load_config()
+    settings = load_web_settings(config.root)
+    if settings.jwt_secret == "dev-only-change-me":
+        console.print(
+            "[bold yellow]⚠️ AS_JWT_SECRET 仍是默认值，公网部署前必须更换[/bold yellow]"
+        )
+    if not settings.origins:
+        console.print(
+            "[yellow]未配置 AS_ALLOWED_ORIGINS：不对浏览器做 Origin 校验（仅适合本地）[/yellow]"
+        )
+    console.print(f"[green]API[/green] http://{host}:{port}/api/docs")
+    uvicorn.run(
+        create_app(config, web_settings=settings),
+        host=host,
+        port=port,
+        workers=1,
+        log_level="info",
+    )
+
+
+@app.command("web-init-admin")
+def web_init_admin(
+    username: str = typer.Option(..., "--username", "-u", help="管理员用户名"),
+    password: str | None = typer.Option(
+        None, "--password", "-p", help="密码（省略则交互输入）"
+    ),
+) -> None:
+    """创建首个管理员账号。"""
+    from .api.db import WebDB
+    from .api.security import hash_password
+
+    config = load_config()
+    pwd = password or typer.prompt("密码", hide_input=True, confirmation_prompt=True)
+    if len(pwd) < 12:
+        console.print("[red]密码至少 12 位[/red]")
+        raise typer.Exit(code=2)
+
+    web_db = WebDB(config.db_path)
+    if web_db.get_user_with_hash(username) is not None:
+        console.print(f"[red]用户名已存在[/red]：{username}")
+        raise typer.Exit(code=1)
+    user = web_db.create_user(
+        username=username, password_hash=hash_password(pwd), role="admin"
+    )
+    console.print(
+        f"[green]管理员已创建[/green]：{user['username']}（{user['id']}）"
+    )
+
+
 if __name__ == "__main__":
     app()

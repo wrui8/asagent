@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from ..base import PermissionLevel, Tool, ToolContext, ToolError, ToolResult
-from .sandbox import DockerSandbox, SandboxResult
+from .sandbox import DockerSandbox, PathMap, SandboxResult
 
 _MAX_WRITE_BYTES = 200_000
 _MAX_READ_BYTES = 64 * 1024
@@ -268,11 +268,13 @@ class RunTestsTool(Tool[RunTestsArgs]):
         sandbox_timeout_s: float = 90.0,
         test_command: list[str] | None = None,
         runner: SandboxRunner | None = None,
+        path_map: PathMap | None = None,
     ):
         self.image = image
         self.sandbox_timeout_s = sandbox_timeout_s
         self.test_command = test_command
         self.runner = runner
+        self.path_map = list(path_map or [])
 
     async def execute(self, args: RunTestsArgs, ctx: ToolContext) -> ToolResult:
         tests_dir: Path | None = None
@@ -293,6 +295,7 @@ class RunTestsTool(Tool[RunTestsArgs]):
             test_command=self.test_command,
             timeout_s=self.sandbox_timeout_s,
             max_output_chars=args.max_output_chars,
+            path_map=self.path_map,
         )
         runner: SandboxRunner = self.runner or (lambda box: box.run_tests())
         result = await runner(sandbox)
@@ -324,6 +327,7 @@ def build_code_tools(
     image: str = "python:3.12-slim",
     sandbox_timeout_s: float = 90.0,
     test_command: list[str] | None = None,
+    path_map: PathMap | None = None,
 ) -> list[Tool]:
     return [
         ListFilesTool(),
@@ -333,5 +337,6 @@ def build_code_tools(
             image=image,
             sandbox_timeout_s=sandbox_timeout_s,
             test_command=test_command,
+            path_map=path_map,
         ),
     ]

@@ -16,13 +16,19 @@ dependencies = [
     "python-dotenv>=1.0",
     "json-repair>=0.30",
     "mcp>=2.3.0",
+    "fastapi>=0.165.0",
+    "uvicorn>=0.54.0",
+    "pwdlib[argon2]>=0.4.2",
+    "pyjwt>=2.15.1",
 ]
 
 [project.optional-dependencies]
 # RAG 场景包依赖；CPU 版 torch，避免与 vLLM 抢显存
+# torch 必须直接声明，tool.uv.sources 只对直接依赖生效（否则会解析成 CUDA 版）
 rag = [
     "sentence-transformers>=3.0",
     "numpy>=1.26",
+    "torch>=2.15,<2.16",
 ]
 
 [[tool.uv.index]]
@@ -69,6 +75,10 @@ ignore = ["E501", "UP046"]
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI 的依赖注入必须写成参数默认值
+"src/asagent/api/**" = ["B008"]
 
 [tool.ruff.lint.isort]
 # 显式声明第一方包，避免不同检出环境下将 asagent.* 误判为第三方导致 I001 不稳定

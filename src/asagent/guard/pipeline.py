@@ -34,6 +34,11 @@ def _looks_like_injection(text: str) -> bool:
     return any(p.search(text) for p in _INJECTION_PATTERNS)
 
 
+def looks_like_injection(text: str) -> bool:
+    """入库前扫描文档中的可疑指令（只标记，不阻断写入）。"""
+    return _looks_like_injection(text)
+
+
 # 只读场景下，最终回答不应包含可直接执行的写语句
 _WRITE_SQL_PATTERN = re.compile(
     r"(?i)\b(delete\s+from|update\s+[\w\"`\[\]]+\s+set|drop\s+(table|index|view|trigger)"

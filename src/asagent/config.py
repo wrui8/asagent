@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     as_workspace_dir: str = "runtime/workspace"
     # 全局默认的单会话成本上限（元）；profile 与 CLI 可覆盖
     as_max_cost_cny: float | None = None
+    # 容器部署时 code 沙箱的宿主路径映射：`容器前缀=宿主前缀`，逗号分隔
+    as_sandbox_path_map: str = ""
 
 
 @dataclass

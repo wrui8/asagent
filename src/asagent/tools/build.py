@@ -42,6 +42,7 @@ def build_registry(profile: Profile, config: AppConfig) -> ToolRegistry:
         # 静态工具为空；工具全部来自运行时发现的 MCP server
         tools = []
     elif profile.name == "code":
+        from .code.sandbox import parse_path_map
         from .code.tools import build_code_tools
 
         cfg = profile.tool_config
@@ -50,6 +51,7 @@ def build_registry(profile: Profile, config: AppConfig) -> ToolRegistry:
             image=str(cfg.get("sandbox_image", "python:3.12-slim")),
             sandbox_timeout_s=float(cfg.get("sandbox_timeout_s", 90)),
             test_command=list(test_command) if test_command else None,
+            path_map=parse_path_map(config.settings.as_sandbox_path_map),
         )
     else:
         raise ValueError(f"场景包 {profile.name} 尚未实现工具构建器")

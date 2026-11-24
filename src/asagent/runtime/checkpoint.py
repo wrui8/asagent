@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   profile TEXT NOT NULL,
   title TEXT,
   status TEXT NOT NULL,
+  owner_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -96,26 +97,42 @@ class CheckpointStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        # 轻量迁移：已有库补 owner_id 列（多用户 API 层使用）
+        self._ensure_column("sessions", "owner_id", "TEXT")
         self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, decl: str) -> None:
+        columns = {
+            row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in columns:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         self._conn.close()
 
     # ---- 会话与快照 ----
-    def create_session(self, profile: str, title: str | None = None) -> SessionState:
+    def create_session(
+        self,
+        profile: str,
+        title: str | None = None,
+        owner_id: str | None = None,
+    ) -> SessionState:
         session_id = f"s_{uuid.uuid4().hex[:12]}"
         ts = _now()
         state = SessionState(
             session_id=session_id,
             profile=profile,
             title=title,
+            owner_id=owner_id,
             created_at=ts,
             updated_at=ts,
         )
         self._conn.execute(
-            "INSERT INTO sessions(session_id, profile, title, status, created_at, updated_at)"
-            " VALUES(?,?,?,?,?,?)",
-            (session_id, profile, title, str(state.status), ts, ts),
+            "INSERT INTO sessions"
+            "(session_id, profile, title, status, owner_id, created_at, updated_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (session_id, profile, title, str(state.status), owner_id, ts, ts),
         )
         self._conn.commit()
         self.save_state(state)
@@ -125,13 +142,15 @@ class CheckpointStore:
         state.updated_at = _now()
         payload = state.model_dump_json()
         self._conn.execute(
-            "INSERT OR REPLACE INTO sessions(session_id, profile, title, status, created_at, updated_at)"
-            " VALUES(?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO sessions"
+            "(session_id, profile, title, status, owner_id, created_at, updated_at)"
+            " VALUES(?,?,?,?,?,?,?)",
             (
                 state.session_id,
                 state.profile,
                 state.title,
                 str(state.status),
+                state.owner_id,
                 state.created_at,
                 state.updated_at,
             ),
@@ -152,11 +171,32 @@ class CheckpointStore:
             raise KeyError(f"会话不存在: {session_id}")
         return SessionState.model_validate_json(row["state_json"])
 
-    def list_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        *,
+        owner_id: str | None = None,
+        profile: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """按归属/场景/状态筛选会话（API 层分页使用）。"""
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in (
+            ("owner_id", owner_id),
+            ("profile", profile),
+            ("status", status),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.extend([limit, offset])
         rows = self._conn.execute(
-            "SELECT session_id, profile, title, status, updated_at FROM sessions"
-            " ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
+            "SELECT session_id, profile, title, status, owner_id, created_at, updated_at"
+            f" FROM sessions{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            params,
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -323,3 +363,10 @@ class CheckpointStore:
             "SELECT content FROM artifacts WHERE id=?", (artifact_id,)
         ).fetchone()
         return row["content"] if row else None
+
+    def artifact_session(self, artifact_id: str) -> str | None:
+        """artifact 所属会话；API 层据此做归属校验。"""
+        row = self._conn.execute(
+            "SELECT session_id FROM artifacts WHERE id=?", (artifact_id,)
+        ).fetchone()
+        return row["session_id"] if row else None

@@ -126,6 +126,8 @@ class AgentRuntime:
         session_id: str | None = None,
         resume: bool = False,
         max_steps: int = 12,
+        owner_id: str | None = None,
+        state: SessionState | None = None,
     ) -> RunResult:
         if resume:
             if not session_id:
@@ -139,8 +141,12 @@ class AgentRuntime:
         else:
             if not user_input:
                 raise ValueError("新任务需要 user_input")
-            state = self.store.create_session(self.profile.name, user_input[:50])
-            state.workspace = str(self._resolved_workspace(state))
+            if state is None:
+                state = self.store.create_session(
+                    self.profile.name, user_input[:50], owner_id=owner_id
+                )
+            if not state.workspace:
+                state.workspace = str(self._resolved_workspace(state))
             self._event(state, EventType.SESSION_CREATED, {"profile": self.profile.name})
             input_verdict = await self.guard.check(
                 GuardStage.INPUT, {"text": user_input}

@@ -25,7 +25,7 @@ eval_suite: evals/rag/golden.jsonl
 require_tool_before_final: true
 
 tool_config:
-  docs_dir: data/docs
-  index_db: data/rag.sqlite3
+  docs_dir: ${AS_KB_DOCS_DIR:-data/docs}
+  index_db: ${AS_KB_INDEX_DB:-data/rag.sqlite3}
   embedding_model: ${AS_EMBEDDING_MODEL:-D:/fishmatrix-llm/models/bge-base-zh-v1.5}
   top_k: 5

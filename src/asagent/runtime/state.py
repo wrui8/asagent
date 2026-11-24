@@ -19,6 +19,8 @@ class SessionState(BaseModel):
     session_id: str
     profile: str
     title: str | None = None
+    # 会话归属（API 层多用户使用；CLI 创建时为 None）
+    owner_id: str | None = None
     status: SessionStatus = SessionStatus.RUNNING
     messages: list[Message] = Field(default_factory=list)
     step: int = 0
