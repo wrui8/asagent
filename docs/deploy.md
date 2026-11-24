@@ -57,8 +57,11 @@ Copy-Item .env.example .env
 #    BGE_MODEL_DIR=D:/fishmatrix-llm/models
 #    DOCKER_SOCKET=//./pipe/docker_engine
 
-# 3) 构建并启动（首次含 torch，耗时较长）
-docker compose -f deploy/docker-compose.yml up -d --build
+# 3) 启动：优先拉 CI 发布的镜像
+docker compose -f deploy/docker-compose.yml pull
+docker compose -f deploy/docker-compose.yml up -d
+#    拉取失败（包私有或尚无镜像）时改源码构建（首次含 torch，耗时较长）：
+#    powershell -ExecutionPolicy Bypass -File deploy\update.ps1 -NoPull
 
 # 4) 健康检查与日志
 curl.exe http://127.0.0.1:8080/api/health
@@ -99,7 +102,7 @@ Dockerfile 不再依赖 `docker/dockerfile` 外部前端镜像，基础镜像为
 `agent.woaiwyj.xin` 指向 `http://127.0.0.1:8080`。
 
 ```powershell
-# 注册计划任务：登录时启动 compose 栈 + 每日 03:17 备份（需管理员）
+# 注册计划任务：登录启动栈 + 每日 03:17 备份 + 每 10 分钟拉取镜像（需管理员）
 powershell -ExecutionPolicy Bypass -File deploy\windows\install-tasks.ps1
 
 # 把 cloudflared 装成 Windows 服务（需管理员；凭据只在脚本内引用，不回显）
@@ -157,15 +160,45 @@ gh pr create --base main --fill      # 或用网页创建 PR
 # CI 的 test/web/app/e2e/docker 五个 job 全绿后合并
 ```
 
-合并后在本机更新镜像与容器：
+镜像构建在 CI 完成：`main` 每推一次，`ci.yml` 的 `docker` job 就构建并推送
+`ghcr.io/wrui8/asagent:latest` 与 `ghcr.io/wrui8/asagent:sha-<短哈希>`。
+本机只负责拉取与重启，不再本地构建。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File deploy\update.ps1
-# 跳过 git 更新（例如已手工拉取）：加 -NoPull
+# 立即拉取最新镜像并重启（带健康检查；digest 没变就直接返回）
+powershell -ExecutionPolicy Bypass -File deploy\pull-update.ps1
+
+# 固定版本 / 回滚
+powershell -ExecutionPolicy Bypass -File deploy\pull-update.ps1 -Image ghcr.io/wrui8/asagent:sha-abc1234
 ```
 
-脚本会确认当前在 `main` 且工作区干净，然后 `git pull --ff-only` → 重建镜像 →
-重启容器 → 轮询 `/api/health`，失败时提示查看 `docker logs asagent-api`。
+自动更新：`install-tasks.ps1` 会注册 `ASAgentAutoUpdate` 计划任务，每 10 分钟
+`docker compose pull` 一次，仅当本地镜像 digest 与 GHCR 不同才 `up -d`。健康检查
+失败会用上一镜像（`ghcr.io/wrui8/asagent:rollback`）重建并再次检查，日志在
+`runtime/auto-update.log`（超过 5 MB 轮转为 `.1`）。
+
+```powershell
+Get-ScheduledTask ASAgentAutoUpdate
+Get-Content runtime\auto-update.log -Tail 20
+```
+
+**包可见性**：`ghcr.io` 的镜像包默认可能是私有的，即使仓库公开。拉取报
+`unauthorized` 时二选一：
+
+- 在 GitHub → 你的 Packages → `asagent` → Package settings 把可见性改为 **Public**；
+- 或本机 `docker login ghcr.io -u <用户名>`，密码填带 `read:packages` 的 PAT
+  （凭据存于 `%USERPROFILE%\.docker\config.json`，自动更新任务复用）。
+
+**源码构建回退**（改本地代码、GHCR 不可用时）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\update.ps1          # 校验 main + git pull + 构建 + 重启
+powershell -ExecutionPolicy Bypass -File deploy\update.ps1 -NoPull  # 跳过 git 校验
+```
+
+`update.ps1` 把镜像 tag 设为 `asagent-api:local`，不会覆盖 GHCR 的 `latest`，
+因此自动更新任务仍能正确识别远端新版本。切回镜像模式时执行一次
+`docker compose -f deploy/docker-compose.yml pull` 即可。
 
 数据库结构由启动时的轻量迁移处理；升级前建议先跑一次备份。前端静态资源在镜像
 内重新构建，无需单独部署 `web/dist`。
@@ -200,6 +233,8 @@ npx playwright test          # 自动 seed 临时库并在 8179 端口起独立�
 | code 场景权限拒绝（Linux） | 宿主 socket 权限应对 uid 10001 放开，例如 `chown root:docker /var/run/docker.sock && chmod 660 ...` 并把 uid 10001 加入 docker 组 |
 | RAG 报模型找不到 | `BGE_MODEL_DIR` 是否挂到 `/models`；`AS_EMBEDDING_MODEL=/models/bge-base-zh-v1.5` |
 | 知识库有文档但检索不到 | 保存后需「重建索引」；看 `/api/kb/status` 的 stale 与任务 |
+| 拉镜像 `unauthorized` | GHCR 包可见性改为 Public，或 `docker login ghcr.io`（PAT 需 `read:packages`） |
+| 自动更新没生效 | `Get-ScheduledTask ASAgentAutoUpdate`；看 `runtime/auto-update.log`；Docker Desktop 是否在运行 |
 
 Linux 差异：
 
@@ -217,11 +252,12 @@ Linux 差异：
 | --- | --- |
 | `deploy/Dockerfile` | 多阶段镜像（web 构建 + Python 运行时） |
 | `deploy/docker-compose.yml` | 端口、卷、环境、健康检查、日志轮转 |
-| `deploy/windows/*.ps1` | 自启、备份计划任务、cloudflared 服务 |
-| `deploy/update.ps1` | 合并 main 后拉取、重建镜像、重启并做健康检查 |
+| `deploy/windows/*.ps1` | 自启、备份、每 10 分钟镜像更新任务、cloudflared 服务 |
+| `deploy/pull-update.ps1` | 拉取 GHCR 镜像、重启容器并做健康检查（支持 `-Image` 固定/回滚） |
+| `deploy/update.ps1` | 源码构建回退：`git pull` → 构建 `asagent-api:local` → 重启并健康检查 |
 | `deploy/linux/backup.sh` | Linux 备份入口 |
 | `deploy/Caddyfile.example` | 可选 TLS 反代示例 |
 | `scripts/backup.py` | 备份/保留策略（无第三方依赖） |
 | `scripts/seed_e2e.py` | E2E 测试账号与数据重置 |
-| `.github/workflows/ci.yml` | pytest/ruff、web、app、e2e、docker 镜像构建校验 |
+| `.github/workflows/ci.yml` | pytest/ruff、web、app、e2e，以及 docker 构建并推送 GHCR |
 | `.github/workflows/release.yml` | `v*` tag 构建 Windows 桌面安装包 |

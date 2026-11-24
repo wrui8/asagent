@@ -1,6 +1,10 @@
 # 生产部署：API 容器 + 宿主 Cloudflare 隧道（隧道指向 127.0.0.1:8080）
 #
-#   docker compose -f deploy/docker-compose.yml up -d --build
+# 镜像来源（ASAGENT_IMAGE 可覆盖）：
+#   - 默认：ghcr.io/wrui8/asagent:latest —— CI 在 main 上构建并推送
+#     拉取更新：deploy\pull-update.ps1（或定时任务 ASAgentAutoUpdate）
+#   - 源码构建：deploy\update.ps1 会把 ASAGENT_IMAGE 设为 asagent-api:local，
+#     避免本地构建覆盖 GHCR 的 latest tag
 #
 # Linux 宿主请设置 DOCKER_SOCKET=/var/run/docker.sock（Windows 用 named pipe）。
 # AS_SANDBOX_PATH_MAP 把容器内路径映射成宿主路径，供 code 沙箱调用宿主 Docker。
@@ -10,6 +14,9 @@ name: asagent
 
 services:
   api:
+    # 有 build 段是为了本地源码构建；生产运行用 image。
+    # 注意：compose up 只在镜像缺失时才构建/拉取，自动更新请用 pull-update.ps1。
+    image: ${ASAGENT_IMAGE:-ghcr.io/wrui8/asagent:latest}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -24,7 +31,6 @@ services:
         APT_MIRROR: ${APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn}
         # 海外部署可置空，改用官方 PyTorch wheel 源
         TORCH_WHEEL_MIRROR: ${TORCH_WHEEL_MIRROR:-https://mirrors.aliyun.com/pytorch-wheels/cpu}
-    image: asagent-api:local
     container_name: asagent-api
     restart: unless-stopped
     env_file:

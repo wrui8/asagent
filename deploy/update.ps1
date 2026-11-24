@@ -1,4 +1,6 @@
-# Rebuild and restart the production stack after a PR is merged into main.
+# Rebuild the image from local source and restart the production stack.
+# Use this for development or when GHCR is unavailable; for the CI-built image
+# use deploy\pull-update.ps1 instead.
 #   powershell -ExecutionPolicy Bypass -File deploy\update.ps1
 #   powershell -ExecutionPolicy Bypass -File deploy\update.ps1 -NoPull
 param(
@@ -26,6 +28,9 @@ while ($true) {
     if ((Get-Date) -gt $deadline) { throw "Docker is not ready after 3 minutes." }
     Start-Sleep -Seconds 5
 }
+
+# 源码构建使用独立 tag，避免覆盖 GHCR 的 :latest 造成误判
+$env:ASAGENT_IMAGE = "asagent-api:local"
 
 docker compose -f deploy\docker-compose.yml build
 if ($LASTEXITCODE -ne 0) { throw "Image build failed" }
