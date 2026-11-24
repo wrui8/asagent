@@ -21,3 +21,12 @@ data/*.db-shm
 
 # 本地手工测试遗留
 seed/
+
+# 数据备份（scripts/backup.py 生成）
+/backups/
+
+# Playwright E2E 产物
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+e2e/.last-run.json

@@ -1,0 +1,23 @@
+# 可选方案：不用 Cloudflare 隧道时，由 Caddy 终止 TLS 并反代 API。
+# 生产使用前把 agent.example.com 换成自己的域名，并设置 AS_COOKIE_SECURE=true。
+{
+	email admin@example.com
+}
+
+agent.example.com {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}

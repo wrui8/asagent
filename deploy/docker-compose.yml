@@ -1,0 +1,61 @@
+# 生产部署：API 容器 + 宿主 Cloudflare 隧道（隧道指向 127.0.0.1:8080）
+#
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Linux 宿主请设置 DOCKER_SOCKET=/var/run/docker.sock（Windows 用 named pipe）。
+# AS_SANDBOX_PATH_MAP 把容器内路径映射成宿主路径，供 code 沙箱调用宿主 Docker。
+# 注意：Docker Desktop（Windows）会把 named pipe 挂成容器内的空目录，容器内的
+# docker CLI 无法连通宿主 daemon，code 场景需在宿主直跑或改用 Linux 部署。
+name: asagent
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        WITH_RAG: "1"
+        WITH_DOCKER_CLI: "1"
+        # 国内网络默认走镜像源；海外部署可覆盖为官方源
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        # uv.lock 里的 wheel 下载域名替换；海外部署可置空
+        PYPI_FILES_MIRROR: ${PYPI_FILES_MIRROR:-https://pypi.tuna.tsinghua.edu.cn}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        APT_MIRROR: ${APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn}
+        # 海外部署可置空，改用官方 PyTorch wheel 源
+        TORCH_WHEEL_MIRROR: ${TORCH_WHEEL_MIRROR:-https://mirrors.aliyun.com/pytorch-wheels/cpu}
+    image: asagent-api:local
+    container_name: asagent-api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      AS_ALLOWED_ORIGINS: ${AS_ALLOWED_ORIGINS:-https://agent.woaiwyj.xin}
+      AS_DESKTOP_CLIENTS: "true"
+      AS_EMBEDDING_MODEL: /models/bge-base-zh-v1.5
+      AS_SANDBOX_PATH_MAP: ${AS_SANDBOX_PATH_MAP:-/app/runtime=D:/code/AS/runtime}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:8080:8000"
+    volumes:
+      - ../runtime:/app/runtime
+      - ../data:/app/data
+      - ../configs:/app/configs:ro
+      - ../evals:/app/evals:ro
+      - ${BGE_MODEL_DIR:-D:/fishmatrix-llm/models}:/models:ro
+      - ${DOCKER_SOCKET:-//./pipe/docker_engine}:/var/run/docker.sock
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
