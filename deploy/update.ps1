@@ -8,7 +8,9 @@ param(
     [int]$HealthTimeoutSeconds = 60
 )
 
-$ErrorActionPreference = "Stop"
+# docker writes normal errors to stderr; Stop would turn them into terminating
+# errors in PowerShell 5.1, so use Continue and check $LASTEXITCODE explicitly.
+$ErrorActionPreference = "Continue"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
 
