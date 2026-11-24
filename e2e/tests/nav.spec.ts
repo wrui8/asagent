@@ -26,5 +26,6 @@ test("普通用户看不到管理员入口，直接访问会被拒绝", async ({
 test("普通用户可以访问审计页", async ({ page }) => {
   await login(page, USER);
   await page.goto("/audit");
-  await expect(page.getByText("审计范围")).toBeVisible();
+  // 普通用户没有会话时展示空态，有会话时展示「审计范围」，两者都说明页面正常开放
+  await expect(page.getByText("审计范围").or(page.getByText("还没有可审计的会话"))).toBeVisible();
 });
