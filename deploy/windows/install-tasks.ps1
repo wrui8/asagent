@@ -1,7 +1,7 @@
 # Register Windows scheduled tasks (run from an elevated PowerShell):
 #   - ASAgentStack     : start docker compose at logon
 #   - ASAgentBackup    : daily backup at 03:17, keep 7 days
-#   - ASAgentAutoUpdate: poll GHCR every 10 minutes, restart only on new image
+# Image updates are manual: run deploy\pull-update.ps1 after CI publishes a new image.
 $ErrorActionPreference = "Stop"
 
 $Principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -31,16 +31,10 @@ $BackupPrincipal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interacti
 Register-ScheduledTask -TaskName "ASAgentBackup" -Action $BackupAction -Trigger $BackupTrigger `
     -Settings $BackupSettings -Principal $BackupPrincipal -Force | Out-Null
 
-$AutoUpdateAction = New-ScheduledTaskAction -Execute $PowerShell `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSScriptRoot\auto-update.ps1`"" `
-    -WorkingDirectory $Root
-$AutoUpdateTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
-    -RepetitionInterval (New-TimeSpan -Minutes 10) `
-    -RepetitionDuration (New-TimeSpan -Days 3650)
-$AutoUpdateSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
-$AutoUpdatePrincipal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName "ASAgentAutoUpdate" -Action $AutoUpdateAction -Trigger $AutoUpdateTrigger `
-    -Settings $AutoUpdateSettings -Principal $AutoUpdatePrincipal -Force | Out-Null
+# Remove the legacy auto-update task if a previous version registered it.
+if (Get-ScheduledTask -TaskName "ASAgentAutoUpdate" -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName "ASAgentAutoUpdate" -Confirm:$false
+    Write-Host "Removed legacy task ASAgentAutoUpdate (updates are manual now)."
+}
 
-Write-Host "Registered tasks: ASAgentStack (at logon), ASAgentBackup (daily 03:17), ASAgentAutoUpdate (every 10 minutes)."
+Write-Host "Registered tasks: ASAgentStack (at logon), ASAgentBackup (daily 03:17)."

@@ -2,7 +2,7 @@
 #
 # 镜像来源（ASAGENT_IMAGE 可覆盖）：
 #   - 默认：ghcr.io/wrui8/asagent:latest —— CI 在 main 上构建并推送
-#     拉取更新：deploy\pull-update.ps1（或定时任务 ASAgentAutoUpdate）
+#     拉取更新：deploy\pull-update.ps1（手动执行）
 #   - 源码构建：deploy\update.ps1 会把 ASAGENT_IMAGE 设为 asagent-api:local，
 #     避免本地构建覆盖 GHCR 的 latest tag
 #
@@ -15,7 +15,7 @@ name: asagent
 services:
   api:
     # 有 build 段是为了本地源码构建；生产运行用 image。
-    # 注意：compose up 只在镜像缺失时才构建/拉取，自动更新请用 pull-update.ps1。
+    # 注意：compose up 只在镜像缺失时才构建/拉取，更新镜像请用 pull-update.ps1。
     image: ${ASAGENT_IMAGE:-ghcr.io/wrui8/asagent:latest}
     build:
       context: ..

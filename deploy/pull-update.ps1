@@ -7,10 +7,18 @@ param(
     [int]$HealthTimeoutSeconds = 90
 )
 
-$ErrorActionPreference = "Stop"
+# docker writes normal errors (e.g. "No such image") to stderr; Stop would turn
+# them into terminating errors in PowerShell 5.1, so use Continue and check codes.
+$ErrorActionPreference = "Continue"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
 $Compose = "deploy\docker-compose.yml"
+
+function Get-ImageId([string]$Ref) {
+    $id = docker image inspect --format "{{.Id}}" $Ref 2>$null
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return ([string]($id | Select-Object -First 1)).Trim()
+}
 
 # Wait for Docker Desktop (up to 3 minutes).
 $deadline = (Get-Date).AddMinutes(3)
@@ -22,8 +30,8 @@ while ($true) {
 }
 
 $env:ASAGENT_IMAGE = $Image
-$before = (docker image inspect --format "{{.Id}}" $Image 2>$null)
-$hadBefore = ($LASTEXITCODE -eq 0)
+$before = Get-ImageId $Image
+$hadBefore = [bool]$before
 
 $pullOutput = docker compose -f $Compose pull api 2>&1
 if ($LASTEXITCODE -ne 0) {
@@ -31,7 +39,7 @@ if ($LASTEXITCODE -ne 0) {
         "`nIf the package is private, run 'docker login ghcr.io' with a token that has read:packages, or make the package public.")
 }
 
-$after = (docker image inspect --format "{{.Id}}" $Image 2>$null)
+$after = Get-ImageId $Image
 if ($hadBefore -and $before -eq $after) {
     $running = (docker ps --filter "name=asagent-api" --format "{{.Names}}")
     if ($running -eq "asagent-api") {

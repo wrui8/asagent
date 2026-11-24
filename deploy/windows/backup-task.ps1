@@ -1,11 +1,17 @@
 # Daily backup task entry point (wraps scripts/backup.py and appends to a log).
-$ErrorActionPreference = "Stop"
+# uv writes progress to stderr; Stop would turn it into a terminating error in
+# PowerShell 5.1, so use Continue and check $LASTEXITCODE explicitly.
+$ErrorActionPreference = "Continue"
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Root
 
 $Uv = Get-Command uv -ErrorAction SilentlyContinue
 if (-not $Uv) { throw "uv not found in PATH; install uv before registering this task" }
+$env:PYTHONIOENCODING = "utf-8"
+# PowerShell 5.1 decodes native stdout with the OEM code page by default, which
+# turns the UTF-8 Chinese output into mojibake in the log.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $LogDir = Join-Path $Root "backups"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
