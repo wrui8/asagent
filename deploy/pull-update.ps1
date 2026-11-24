@@ -43,8 +43,13 @@ $after = Get-ImageId $Image
 if ($hadBefore -and $before -eq $after) {
     $running = (docker ps --filter "name=asagent-api" --format "{{.Names}}")
     if ($running -eq "asagent-api") {
-        Write-Host "Already up to date: $Image"
-        exit 0
+        # 本地镜像未变，但容器可能仍跑着源码构建的 asagent-api:local；
+        # 必须再比对容器实际使用的镜像，否则会误报「已是最新」而不切换。
+        $currentId = ([string]((docker inspect --format "{{.Image}}" asagent-api 2>$null) | Select-Object -First 1)).Trim()
+        if ($currentId -eq $after) {
+            Write-Host "Already up to date: $Image"
+            exit 0
+        }
     }
 }
 
