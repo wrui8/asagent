@@ -203,6 +203,20 @@ powershell -ExecutionPolicy Bypass -File deploy\update.ps1 -NoPull  # 跳过 git
 数据库结构由启动时的轻量迁移处理；升级前建议先跑一次备份。前端静态资源在镜像
 内重新构建，无需单独部署 `web/dist`。
 
+### 发布安装包（Windows / Android）
+
+推送 `v*` tag（例如 `v0.1.0`）触发 `.github/workflows/release.yml`：
+
+- `build-windows`：`windows-latest` 构建 Tauri NSIS 安装包
+- `build-android`：`ubuntu-latest` 用 Expo prebuild + Gradle 构建 release APK，
+  再用 `apksigner` 签名
+- `publish`：汇总两个 artifact，挂到对应 tag 的 GitHub Release
+
+Android 签名材料只存放在本机（仓库之外），以 Repository Secrets 提供给 CI：
+`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、
+`ANDROID_KEY_PASSWORD`。**签名密钥必须离线备份**，丢失后将无法覆盖升级已安装的
+应用。iOS 需要 macOS + Apple 签名，托管 runner 无法构建，暂不提供安装包。
+
 ## 6. 端到端测试（E2E）
 
 `e2e/` 是独立 Node 包，使用 Playwright，不调用真实模型：
