@@ -1,7 +1,10 @@
-# Scheduled task entry: poll GHCR for a new :latest image and restart only when
-# the digest changed. Restarts the previous image if the health check fails.
+# Optional script (NOT registered by install-tasks.ps1 anymore): poll GHCR for a
+# new :latest image and restart only when the digest changed. Restarts the
+# previous image if the health check fails. Manual alternative: pull-update.ps1.
 # Log: runtime\auto-update.log (rotated at 5 MB).
-$ErrorActionPreference = "Stop"
+# docker writes normal errors (e.g. "No such image") to stderr; Stop would turn
+# them into terminating errors in PowerShell 5.1, so use Continue and check codes.
+$ErrorActionPreference = "Continue"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Root
 
@@ -9,6 +12,12 @@ $Image = "ghcr.io/wrui8/asagent:latest"
 $RollbackImage = "ghcr.io/wrui8/asagent:rollback"
 $Compose = "deploy\docker-compose.yml"
 $Log = Join-Path $Root "runtime\auto-update.log"
+
+function Get-ImageId([string]$Ref) {
+    $id = docker image inspect --format "{{.Id}}" $Ref 2>$null
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return ([string]($id | Select-Object -First 1)).Trim()
+}
 
 function Write-Log([string]$Message) {
     $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
@@ -50,8 +59,8 @@ if (-not (Wait-Docker)) {
 }
 
 $env:ASAGENT_IMAGE = $Image
-$before = (docker image inspect --format "{{.Id}}" $Image 2>$null)
-$hadBefore = ($LASTEXITCODE -eq 0)
+$before = Get-ImageId $Image
+$hadBefore = [bool]$before
 
 $pullOutput = docker compose -f $Compose pull --quiet api 2>&1
 if ($LASTEXITCODE -ne 0) {
@@ -60,7 +69,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-$after = (docker image inspect --format "{{.Id}}" $Image 2>$null)
+$after = Get-ImageId $Image
 if (-not $after) {
     Write-Log "ERROR image missing after pull"
     exit 1
