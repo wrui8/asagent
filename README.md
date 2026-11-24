@@ -4,6 +4,13 @@
 
 架构设计见 [docs/architecture.md](docs/architecture.md)。
 
+## 下载
+
+- **Windows 桌面端 / Android APK**：[GitHub Releases](https://github.com/wrui8/asagent/releases/latest)
+- **Web 端**：<https://agent.woaiwyj.xin>
+
+iOS 需要 macOS + Apple 签名环境，暂未提供安装包。
+
 ## 环境准备
 
 ```bash
