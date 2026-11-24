@@ -275,7 +275,13 @@ export function Admin() {
                       : { label: "有效", cls: "badge-ok" };
                 return (
                   <tr key={invite.id}>
-                    <td className="mono">INV-{shortId(invite.id, 8).toUpperCase()}</td>
+                    <td
+                      className="mono"
+                      style={{ color: "var(--faint)", fontSize: 12 }}
+                      title="邀请码明文只在生成时显示一次，数据库只保存哈希"
+                    >
+                      已隐藏
+                    </td>
                     <td>
                       <span className="badge badge-mute">{invite.role}</span>
                     </td>
