@@ -25,7 +25,10 @@ test("系统页展示运行路径与 MCP 配置", async ({ page }) => {
   await login(page);
   await page.goto("/system");
 
-  await expect(page.getByText("运行路径")).toBeVisible({ timeout: 15_000 });
+  // 页面描述里也含「运行路径」四个字，必须精确匹配卡片标签
+  await expect(page.getByText("运行路径", { exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByText("MCP 工具服务").first()).toBeVisible();
   await expect(page.getByText("mcp__demo__*").first()).toBeVisible({
     timeout: 15_000,
