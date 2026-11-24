@@ -23,6 +23,7 @@ web/dist
 app
 desktop
 packages
+e2e
 
 # 测试与文档
 tests
