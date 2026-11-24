@@ -25,6 +25,13 @@ export interface ProfileInfo {
   max_cost_cny: number | null;
 }
 
+export interface AppVersionInfo {
+  latest: string;
+  min_supported: string;
+  android_url: string;
+  notes: string;
+}
+
 export interface Session {
   session_id: string;
   profile: string;

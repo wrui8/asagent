@@ -3,13 +3,20 @@ import {
   LogOut,
   Moon,
   Plus,
+  RefreshCw,
   Search,
   Sun,
   Users,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { errorMessage } from "../lib/errors";
 import { routeMeta } from "../lib/nav";
+import {
+  checkDesktopUpdate,
+  installDesktopUpdate,
+  IS_TAURI,
+} from "../lib/platform";
 import { useAuth } from "../stores/auth";
 import { useUI } from "../stores/ui";
 
@@ -25,7 +32,35 @@ export function Topbar() {
   const toast = useUI((s) => s.toast);
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const handleCheckUpdate = async () => {
+    setMenuOpen(false);
+    if (updateBusy) return;
+    setUpdateBusy(true);
+    try {
+      const info = await checkDesktopUpdate();
+      if (!info) {
+        toast("当前已是最新版本");
+        return;
+      }
+      if (
+        !window.confirm(
+          `发现新版本 ${info.version}，现在下载并安装？安装程序启动后应用会退出。`,
+        )
+      ) {
+        toast(`新版本 ${info.version} 可用`);
+        return;
+      }
+      toast("正在下载更新，完成后应用会自动退出");
+      await installDesktopUpdate();
+    } catch (error) {
+      toast(errorMessage(error), "err");
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
 
   useEffect(() => {
     setMenuOpen(false);
@@ -127,6 +162,16 @@ export function Topbar() {
               >
                 <Users size={14} />
                 用户与邀请码
+              </button>
+            ) : null}
+            {IS_TAURI ? (
+              <button
+                className="user-menu-item"
+                onClick={() => void handleCheckUpdate()}
+                disabled={updateBusy}
+              >
+                <RefreshCw size={14} />
+                {updateBusy ? "检查更新中…" : "检查桌面更新"}
               </button>
             ) : null}
             <div className="user-menu-sep" />

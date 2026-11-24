@@ -2,6 +2,7 @@ import { API_BASE } from "./config";
 import { readRefreshToken, writeRefreshToken } from "./storage";
 import type {
   AgentEvent,
+  AppVersionInfo,
   Approval,
   ProfileInfo,
   Session,
@@ -174,6 +175,15 @@ export async function logout(): Promise<void> {
 }
 
 /* ------------------------------ 会话 ------------------------------ */
+
+/** 公开接口：无需登录即可检查客户端版本。 */
+export async function fetchAppVersion(): Promise<AppVersionInfo> {
+  const resp = await fetch(`${API_BASE}/api/app/version`, {
+    headers: { "X-Client": "mobile" },
+  });
+  if (!resp.ok) throw await parseError(resp);
+  return (await resp.json()) as AppVersionInfo;
+}
 
 export function fetchProfiles(): Promise<ProfileInfo[]> {
   return request<ProfileInfo[]>("/api/profiles");
