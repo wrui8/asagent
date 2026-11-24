@@ -268,14 +268,14 @@ tool_config:
 uv run pytest -q
 uv run ruff check .
 bash scripts/ci.sh        # 本地等价于后端 job（含 uv sync）
-bash scripts/ci.sh --full # 追加 web/app/e2e，对齐 CI 四个 job
+bash scripts/ci.sh --full # 追加 web/app/e2e；docker job 用 compose build 本地校验
 
 cd web && npm run typecheck && npm run build
 cd app && npx tsc --noEmit
 cd e2e && npm ci && npx playwright test    # 独立 8179 端口 + 临时库，不调用模型
 ```
 
-`.github/workflows/ci.yml` 在 `ubuntu-latest` 上并行跑四个 job：
+`.github/workflows/ci.yml` 在 `ubuntu-latest` 上并行跑五个 job：
 
 | job | 内容 |
 | --- | --- |
@@ -283,9 +283,26 @@ cd e2e && npm ci && npx playwright test    # 独立 8179 端口 + 临时库，�
 | `web` | `npm ci` → `typecheck` → `build` |
 | `app` | `npm ci` → `npx tsc --noEmit` |
 | `e2e` | 构建 web → 安装 Chromium → Playwright（失败上传报告） |
+| `docker` | 构建生产镜像校验 Dockerfile（含 RAG，不推送） |
 
 `.github/workflows/release.yml` 在推送 `v*` tag（或手动触发）时用 `windows-latest`
 构建 Tauri NSIS 安装包，作为 artifact 上传并附到 GitHub Release。
+
+### 维护流程（分支 → PR → 更新镜像）
+
+`main` 受保护，不能直接推送。日常维护：
+
+```powershell
+git switch main; git pull --ff-only
+git switch -c feat/<topic>          # 1. 从 main 拉分支
+# 开发、测试、提交
+git push -u origin feat/<topic>     # 2. 推分支并开 PR（gh pr create）
+# 3. PR 通过 CI 后合并到 main
+powershell -ExecutionPolicy Bypass -File deploy\update.ps1   # 4. 更新本机镜像并重启
+```
+
+`deploy\update.ps1` 会校验在 `main` 且工作区干净、`git pull --ff-only`、重建镜像、
+重启容器并轮询 `/api/health`；`-NoPull` 可跳过 git 更新。
 
 ## 评测基线
 

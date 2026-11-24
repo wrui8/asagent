@@ -144,13 +144,28 @@ Linux 宿主用 `deploy/linux/backup.sh`（cron 调用，`BACKUP_KEEP` 可覆盖
 > `.env` 默认不备份（含密钥）。确需随备份保存时加 `--include-env`，并自行限制
 > `backups/` 目录权限。
 
-## 5. 升级
+## 5. 升级与维护
+
+`main` 受保护，维护走「开发分支 → PR → 合并」：
 
 ```powershell
-git pull
-docker compose -f deploy/docker-compose.yml build
-docker compose -f deploy/docker-compose.yml up -d
+git switch main; git pull --ff-only
+git switch -c feat/<topic>
+# 开发、测试、提交
+git push -u origin feat/<topic>
+gh pr create --base main --fill      # 或用网页创建 PR
+# CI 的 test/web/app/e2e/docker 五个 job 全绿后合并
 ```
+
+合并后在本机更新镜像与容器：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\update.ps1
+# 跳过 git 更新（例如已手工拉取）：加 -NoPull
+```
+
+脚本会确认当前在 `main` 且工作区干净，然后 `git pull --ff-only` → 重建镜像 →
+重启容器 → 轮询 `/api/health`，失败时提示查看 `docker logs asagent-api`。
 
 数据库结构由启动时的轻量迁移处理；升级前建议先跑一次备份。前端静态资源在镜像
 内重新构建，无需单独部署 `web/dist`。
@@ -203,9 +218,10 @@ Linux 差异：
 | `deploy/Dockerfile` | 多阶段镜像（web 构建 + Python 运行时） |
 | `deploy/docker-compose.yml` | 端口、卷、环境、健康检查、日志轮转 |
 | `deploy/windows/*.ps1` | 自启、备份计划任务、cloudflared 服务 |
+| `deploy/update.ps1` | 合并 main 后拉取、重建镜像、重启并做健康检查 |
 | `deploy/linux/backup.sh` | Linux 备份入口 |
 | `deploy/Caddyfile.example` | 可选 TLS 反代示例 |
 | `scripts/backup.py` | 备份/保留策略（无第三方依赖） |
 | `scripts/seed_e2e.py` | E2E 测试账号与数据重置 |
-| `.github/workflows/ci.yml` | pytest/ruff、web、app、e2e |
+| `.github/workflows/ci.yml` | pytest/ruff、web、app、e2e、docker 镜像构建校验 |
 | `.github/workflows/release.yml` | `v*` tag 构建 Windows 桌面安装包 |

@@ -147,3 +147,31 @@ jobs:
             e2e/playwright-report
             e2e/test-results
           retention-days: 7
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 校验生产镜像可构建（含 RAG，使用官方源；不推送）
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: asagent-api:ci
+          build-args: |
+            WITH_RAG=1
+            WITH_DOCKER_CLI=1
+            PIP_INDEX_URL=https://pypi.org/simple
+            PYPI_FILES_MIRROR=
+            NPM_REGISTRY=https://registry.npmjs.org
+            APT_MIRROR=
+            TORCH_WHEEL_MIRROR=
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
