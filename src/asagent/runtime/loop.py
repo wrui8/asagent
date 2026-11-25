@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,8 @@ from .events import EventType
 from .state import SessionState, SessionStatus
 
 ClientFactory = Callable[[AppConfig, str], ModelClient]
+
+logger = logging.getLogger(__name__)
 
 _MAX_EVENTS_TEXT = 800
 _UNSET = object()
@@ -79,6 +82,7 @@ class AgentRuntime:
         tests_dir: Path | None = None,
         mcp_manager: object | None = None,
         max_cost_cny: float | None = None,
+        memory: object | None = None,
     ):
         self.config = config
         self.profile = profile
@@ -97,6 +101,9 @@ class AgentRuntime:
         self._mcp_ready = False
         self._mcp_tool_names: list[str] = []
         self.max_cost_cny = max_cost_cny
+        # 记忆召回（阶段 4）：实现 `async section(user_id, query) -> str | None`；
+        # 未启用时为 None，构建上下文的行为与 v1 完全一致。
+        self.memory = memory
         self._clients: dict[str, ModelClient] = {}
 
     async def aclose(self) -> None:
@@ -182,6 +189,9 @@ class AgentRuntime:
         final_blocks = 0
         tool_forced = 0
         injection_reminders = 0
+        # 长期记忆每次运行只召回一次，后续步骤复用同一段摘要
+        memory_section: str | None = None
+        memory_loaded = False
 
         try:
             if not await self._recover_pending(state):
@@ -206,11 +216,17 @@ class AgentRuntime:
                     },
                 )
 
+                if not memory_loaded:
+                    memory_section = await self._memory_section(
+                        state, user_input or self._last_user_text(state)
+                    )
+                    memory_loaded = True
                 context = self.context_builder.build(
                     system_prompt=self.profile.system_prompt,
                     messages=state.messages,
                     tools=specs,
                     aggressive=aggressive,
+                    extra_system=memory_section,
                 )
                 self._event(
                     state,
@@ -219,6 +235,7 @@ class AgentRuntime:
                         "messages": len(context),
                         "approx_tokens": self.context_builder.estimate_messages(context, specs),
                         "aggressive": aggressive,
+                        "memory": bool(memory_section),
                     },
                 )
 
@@ -847,6 +864,22 @@ class AgentRuntime:
             if message.role == "assistant" and message.tool_calls:
                 return [c for c in message.tool_calls if c.id not in responded]
         return []
+
+    async def _memory_section(
+        self, state: SessionState, query: str
+    ) -> str | None:
+        """召回长期记忆；未启用或失败时返回 None（fail-open）。"""
+        if self.memory is None or not state.owner_id or not query.strip():
+            return None
+        recall = getattr(self.memory, "section", None)
+        if recall is None:
+            return None
+        try:
+            section = await recall(state.owner_id, query)
+        except Exception:  # noqa: BLE001 - 记忆是旁路，失败不能影响对话
+            logger.warning("记忆召回失败，已跳过: %s", state.session_id, exc_info=True)
+            return None
+        return section or None
 
     @staticmethod
     def _last_user_text(state: SessionState) -> str:

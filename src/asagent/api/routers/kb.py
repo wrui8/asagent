@@ -5,9 +5,9 @@ import asyncio
 from fastapi import APIRouter, Depends, Query
 
 from ...config import AppConfig
-from ...tools.rag.index import RagIndex
+from ...storage.protocols import WebStore
+from ...tools.rag.factory import IndexLike
 from .. import kb as kb_service
-from ..db import WebDB
 from ..deps import (
     api_error,
     current_user,
@@ -47,7 +47,7 @@ def _disk_docs(paths) -> list[str]:
     return sorted(p.stem for p in paths.docs_dir.glob("*.md"))
 
 
-def _sync_docs(web: WebDB, paths) -> None:
+def _sync_docs(web: WebStore, paths) -> None:
     """把磁盘上已有、但还没进入管理表的文档补录进来（如初始化时的 data/docs）。"""
     known = {row["doc_id"]: row for row in web.kb_list()}
     for doc_id in _disk_docs(paths):
@@ -65,7 +65,7 @@ def _sync_docs(web: WebDB, paths) -> None:
         )
 
 
-def _index_maps(index: RagIndex) -> tuple[dict[str, str], dict[str, int]]:
+def _index_maps(index: IndexLike) -> tuple[dict[str, str], dict[str, int]]:
     return index.doc_hashes(), {d.doc_id: d.chunks for d in index.list_docs()}
 
 
@@ -89,7 +89,7 @@ def _require_doc_id(doc_id: str) -> None:
         )
 
 
-def _read_row(web: WebDB, doc_id: str) -> dict:
+def _read_row(web: WebStore, doc_id: str) -> dict:
     row = web.kb_get(doc_id)
     if row is None:
         raise api_error(404, "文档不存在", "not_found")
@@ -108,13 +108,13 @@ def _content_of(paths, row: dict) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _detail(paths, web: WebDB, index: RagIndex, row: dict) -> KBDocDetail:
+def _detail(paths, web: WebStore, index: IndexLike, row: dict) -> KBDocDetail:
     hashes, chunks = _index_maps(index)
     base = _doc_out(row, hashes=hashes, chunks=chunks)
     return KBDocDetail(**base.model_dump(), content=_content_of(paths, row))
 
 
-def _audit(web: WebDB, actor: str, action: str, doc_id: str, detail: str = "") -> None:
+def _audit(web: WebStore, actor: str, action: str, doc_id: str, detail: str = "") -> None:
     web.kb_audit(actor=actor, action=action, doc_id=doc_id, detail=detail or None)
 
 
@@ -123,7 +123,7 @@ def _audit(web: WebDB, actor: str, action: str, doc_id: str, detail: str = "") -
 async def list_docs(
     include_deleted: bool = True,
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     config: AppConfig = Depends(get_config),
 ) -> list[KBDocOut]:
     paths = kb_service.kb_paths(config)
@@ -139,7 +139,7 @@ async def list_docs(
 async def create_doc(
     payload: KBDocCreate,
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     config: AppConfig = Depends(get_config),
 ) -> KBDocDetail:
     _require_doc_id(payload.doc_id)
@@ -173,7 +173,7 @@ async def create_doc(
 async def get_doc(
     doc_id: str,
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     config: AppConfig = Depends(get_config),
 ) -> KBDocDetail:
     _require_doc_id(doc_id)
@@ -188,7 +188,7 @@ async def update_doc(
     doc_id: str,
     payload: KBDocUpdate,
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     config: AppConfig = Depends(get_config),
 ) -> KBDocDetail:
     _require_doc_id(doc_id)
@@ -224,7 +224,7 @@ async def update_doc(
 async def delete_doc(
     doc_id: str,
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     config: AppConfig = Depends(get_config),
 ) -> KBDocOut:
     _require_doc_id(doc_id)
@@ -247,7 +247,7 @@ async def delete_doc(
 async def restore_doc(
     doc_id: str,
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     config: AppConfig = Depends(get_config),
 ) -> KBDocDetail:
     _require_doc_id(doc_id)
@@ -280,7 +280,7 @@ async def list_versions(
     doc_id: str,
     limit: int = Query(20, ge=1, le=100),
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> list[dict]:
     _require_doc_id(doc_id)
     _read_row(web, doc_id)
@@ -292,7 +292,7 @@ async def rollback_doc(
     doc_id: str,
     payload: KBRollbackRequest,
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     config: AppConfig = Depends(get_config),
 ) -> KBDocDetail:
     _require_doc_id(doc_id)
@@ -328,7 +328,7 @@ async def rollback_doc(
 @router.get("/status")
 async def index_status(
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     config: AppConfig = Depends(get_config),
     runner: KBIndexRunner = Depends(get_kb_runner),
 ) -> dict:
@@ -377,7 +377,7 @@ async def reindex(
 async def list_jobs(
     limit: int = Query(20, ge=1, le=100),
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> list[dict]:
     return web.kb_jobs(limit=limit)
 
@@ -386,6 +386,6 @@ async def list_jobs(
 async def list_audit(
     limit: int = Query(50, ge=1, le=200),
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> list[dict]:
     return web.kb_audit_list(limit=limit)

@@ -14,20 +14,30 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .config import ConfigError, load_config
+from .config import AppConfig, ConfigError, load_config
 from .eval.runner import EvalRunner
 from .obs.trace import TraceWriter
 from .profiles.loader import available_profiles, load_profile
 from .runtime.approval import build_approver
-from .runtime.checkpoint import CheckpointStore
 from .runtime.events import EventType
 from .runtime.factory import build_runtime
 from .runtime.state import SessionStatus
+from .storage import Storage, build_storage
 from .tools.base import PermissionLevel
 from .tools.sql.demo import generate_demo_db
 
 app = typer.Typer(add_completion=False, help="asagent：学习型企业级 Agent 底座")
 console = Console()
+
+worker_app = typer.Typer(add_completion=False, help="后台 worker（记忆抽取 / 夜间巩固）")
+memory_app = typer.Typer(add_completion=False, help="长期记忆（阶段 4）运维命令")
+app.add_typer(worker_app, name="worker")
+app.add_typer(memory_app, name="memory")
+
+
+def _open_storage(config: AppConfig) -> Storage:
+    """按 AS_STORAGE_BACKEND 打开存储；调用方负责 close。"""
+    return build_storage(config)
 
 
 @app.command()
@@ -179,6 +189,7 @@ def run(
         console.print("[bold yellow]⚠️ 已启用自动批准：所有写操作将直接执行[/bold yellow]")
 
     config = load_config()
+    storage = _open_storage(config)
     runtime = build_runtime(
         config,
         profile,
@@ -187,6 +198,7 @@ def run(
         workspace=Path(workspace).expanduser().resolve() if workspace else None,
         tests_dir=Path(tests).expanduser().resolve() if tests else None,
         max_cost_cny=max_cost,
+        store=storage.kernel,
     )
 
     async def _go():
@@ -195,8 +207,10 @@ def run(
         finally:
             await runtime.aclose()
 
-    result = asyncio.run(_go())
-    runtime.store.close()
+    try:
+        result = asyncio.run(_go())
+    finally:
+        storage.close()
 
     if result.status == SessionStatus.AWAITING_APPROVAL:
         console.print(f"\n[bold yellow]等待审批[/bold yellow]：{result.error}")
@@ -238,11 +252,13 @@ def resume(
         console.print("[bold yellow]⚠️ 已启用自动批准：所有写操作将直接执行[/bold yellow]")
 
     config = load_config()
-    probe = CheckpointStore(config.db_path)
+    storage = _open_storage(config)
     try:
-        state = probe.load_state(session_id)
-    finally:
-        probe.close()
+        state = storage.kernel.load_state(session_id)
+    except KeyError:
+        storage.close()
+        console.print(f"[red]会话不存在[/red]：{session_id}")
+        raise typer.Exit(code=1) from None
 
     runtime = build_runtime(
         config,
@@ -250,6 +266,7 @@ def resume(
         approver=approver,
         workspace=Path(workspace).expanduser().resolve() if workspace else None,
         max_cost_cny=max_cost,
+        store=storage.kernel,
     )
 
     async def _go():
@@ -260,8 +277,10 @@ def resume(
         finally:
             await runtime.aclose()
 
-    result = asyncio.run(_go())
-    runtime.store.close()
+    try:
+        result = asyncio.run(_go())
+    finally:
+        storage.close()
 
     if result.status == SessionStatus.AWAITING_APPROVAL:
         console.print(
@@ -285,7 +304,8 @@ def approve(
 ) -> None:
     """审批挂起会话中的写操作；之后用 resume 继续执行。"""
     config = load_config()
-    store = CheckpointStore(config.db_path)
+    storage = _open_storage(config)
+    store = storage.kernel
     try:
         try:
             state = store.load_state(session_id)
@@ -345,7 +365,7 @@ def approve(
             console.print(f"[green]{verdict}[/green]：{inv.tool}（{inv.call_id}）")
         console.print(f"请运行 [bold]uv run asagent resume {session_id}[/bold]")
     finally:
-        store.close()
+        storage.close()
 
 
 @app.command()
@@ -354,7 +374,8 @@ def audit(
 ) -> None:
     """查看写操作审计：目标文件、备份路径与哈希。"""
     config = load_config()
-    store = CheckpointStore(config.db_path)
+    storage = _open_storage(config)
+    store = storage.kernel
     try:
         if session_id:
             try:
@@ -368,7 +389,7 @@ def audit(
         else:
             events = store.recent_events_of_type(str(EventType.AUDIT), limit=50)
     finally:
-        store.close()
+        storage.close()
 
     if not events:
         console.print("没有写操作审计记录。")
@@ -411,11 +432,11 @@ def trace_cmd(
     config = load_config()
     events = TraceWriter(config.trace_dir).read(session_id)
     if not events:
-        store = CheckpointStore(config.db_path)
+        storage = _open_storage(config)
         try:
-            events = [e.model_dump() for e in store.events(session_id)]
+            events = [e.model_dump() for e in storage.kernel.events(session_id)]
         finally:
-            store.close()
+            storage.close()
 
     if as_json:
         console.print_json(json.dumps(events, ensure_ascii=False))
@@ -445,10 +466,14 @@ def evaluate(
     """运行场景包的黄金评测集。"""
     config = load_config()
     model_list = [m.strip() for m in models.split(",")] if models else None
-    runner = EvalRunner(config)
-    report = asyncio.run(
-        runner.run_suite(profile, models=model_list, repeat=repeat, limit=limit)
-    )
+    storage = _open_storage(config)
+    runner = EvalRunner(config, store=storage.kernel)
+    try:
+        report = asyncio.run(
+            runner.run_suite(profile, models=model_list, repeat=repeat, limit=limit)
+        )
+    finally:
+        storage.close()
 
     console.print(report.to_markdown())
 
@@ -467,7 +492,7 @@ def rag_index(
 ) -> None:
     """构建或刷新 RAG 场景的向量索引（本地 bge，CPU）。"""
     from .profiles.loader import load_profile
-    from .tools.rag.index import RagIndex
+    from .tools.rag.factory import make_index
 
     config = load_config()
     cfg = load_profile(profile, project_root=config.root).tool_config
@@ -476,13 +501,16 @@ def rag_index(
         console.print("[red]缺少 embedding 模型路径[/red]：请设置 AS_EMBEDDING_MODEL")
         raise typer.Exit(code=2)
 
-    index = RagIndex(
+    index = make_index(
+        settings=config.settings,
         index_db=config.path(cfg.get("index_db", "data/rag.sqlite3")),
         docs_dir=config.path(cfg.get("docs_dir", "data/docs")),
         embedding_model=model,
     )
     if force:
-        count = index.build()
+        # Milvus 后端全量重建走「新集合 + 别名切换」，SQLite 直接覆盖写入
+        rebuild = getattr(index, "rebuild", None)
+        count = rebuild() if rebuild is not None else index.build()
         console.print(f"[green]索引已重建[/green]：{count} 个片段 -> {index.index_db}")
     else:
         rebuilt = index.ensure()
@@ -545,8 +573,11 @@ def demo(
 def web(
     host: str = typer.Option("127.0.0.1", "--host", help="监听地址"),
     port: int = typer.Option(8000, "--port", help="监听端口"),
+    workers: int | None = typer.Option(
+        None, "--workers", help="worker 数（默认读 AS_WORKERS）；>1 需要 PostgreSQL + Redis"
+    ),
 ) -> None:
-    """启动 Web API（单 worker：任务调度在进程内）。"""
+    """启动 Web API；多 worker 时任务调度状态走 PostgreSQL/Redis。"""
     import uvicorn
 
     from .api.app import create_app
@@ -562,7 +593,34 @@ def web(
         console.print(
             "[yellow]未配置 AS_ALLOWED_ORIGINS：不对浏览器做 Origin 校验（仅适合本地）[/yellow]"
         )
-    console.print(f"[green]API[/green] http://{host}:{port}/api/docs")
+
+    count = max(1, workers if workers is not None else config.settings.as_workers)
+    if count > 1:
+        backend = config.settings.as_storage_backend
+        if backend != "postgres" or not config.settings.as_redis_url.strip():
+            console.print(
+                "[red]多 worker 需要 AS_STORAGE_BACKEND=postgres 且配置 AS_REDIS_URL[/red]"
+            )
+            raise typer.Exit(code=2)
+        console.print(
+            f"[green]API[/green] http://{host}:{port}/api/docs"
+            f"（{count} workers，{backend}）"
+        )
+        # 多 worker 下每个进程独立建 app：必须用 import string + factory
+        uvicorn.run(
+            "asagent.api.app:create_app",
+            factory=True,
+            host=host,
+            port=port,
+            workers=count,
+            log_level="info",
+        )
+        return
+
+    console.print(
+        f"[green]API[/green] http://{host}:{port}/api/docs"
+        f"（单 worker，{config.settings.as_storage_backend}）"
+    )
     uvicorn.run(
         create_app(config, web_settings=settings),
         host=host,
@@ -580,7 +638,6 @@ def web_init_admin(
     ),
 ) -> None:
     """创建首个管理员账号。"""
-    from .api.db import WebDB
     from .api.security import hash_password
 
     config = load_config()
@@ -589,13 +646,17 @@ def web_init_admin(
         console.print("[red]密码至少 12 位[/red]")
         raise typer.Exit(code=2)
 
-    web_db = WebDB(config.db_path)
-    if web_db.get_user_with_hash(username) is not None:
-        console.print(f"[red]用户名已存在[/red]：{username}")
-        raise typer.Exit(code=1)
-    user = web_db.create_user(
-        username=username, password_hash=hash_password(pwd), role="admin"
-    )
+    storage = _open_storage(config)
+    try:
+        web_db = storage.web
+        if web_db.get_user_with_hash(username) is not None:
+            console.print(f"[red]用户名已存在[/red]：{username}")
+            raise typer.Exit(code=1)
+        user = web_db.create_user(
+            username=username, password_hash=hash_password(pwd), role="admin"
+        )
+    finally:
+        storage.close()
     console.print(
         f"[green]管理员已创建[/green]：{user['username']}（{user['id']}）"
     )
@@ -609,7 +670,6 @@ def web_reset_password(
     ),
 ) -> None:
     """重置已有用户密码，并吊销该用户所有 refresh token。"""
-    from .api.db import WebDB
     from .api.security import hash_password
 
     config = load_config()
@@ -618,15 +678,130 @@ def web_reset_password(
         console.print("[red]密码至少 12 位[/red]")
         raise typer.Exit(code=2)
 
-    web_db = WebDB(config.db_path)
-    user = web_db.get_user_with_hash(username)
-    if user is None:
-        console.print(f"[red]用户不存在[/red]：{username}")
-        raise typer.Exit(code=1)
-    web_db.update_user(user["id"], password_hash=hash_password(pwd))
-    # 旧 refresh token 必须失效，否则已登录的会话可继续续期
-    web_db.revoke_user_refreshes(user["id"])
+    storage = _open_storage(config)
+    try:
+        web_db = storage.web
+        user = web_db.get_user_with_hash(username)
+        if user is None:
+            console.print(f"[red]用户不存在[/red]：{username}")
+            raise typer.Exit(code=1)
+        web_db.update_user(user["id"], password_hash=hash_password(pwd))
+        # 旧 refresh token 必须失效，否则已登录的会话可继续续期
+        web_db.revoke_user_refreshes(user["id"])
+    finally:
+        storage.close()
     console.print(f"[green]密码已重置[/green]：{user['username']}（{user['id']}）")
+
+
+# ---------------------------------------------------------------------- #
+# 阶段 4：记忆子系统
+# ---------------------------------------------------------------------- #
+def _open_memory(config: AppConfig):
+    """按开关装配记忆服务；调用方负责 aclose/close。"""
+    from .memory.service import build_memory_service
+    from .storage.redis_state import RedisState
+
+    storage = build_storage(config)
+    redis = (
+        RedisState(config.settings.as_redis_url)
+        if config.settings.as_redis_url.strip()
+        else None
+    )
+    try:
+        service = build_memory_service(config, storage, redis)
+    except Exception:
+        storage.close()
+        if redis is not None:
+            redis.close()
+        raise
+    if service is None:
+        storage.close()
+        if redis is not None:
+            redis.close()
+        console.print(
+            "[red]记忆子系统未启用[/red]：请设置 AS_MEMORY_ENABLED=true "
+            "并配置 postgres/redis/rabbitmq/milvus"
+        )
+        raise typer.Exit(code=2)
+    return service, storage, redis
+
+
+@worker_app.command("memory")
+def worker_memory(
+    nightly: bool = typer.Option(
+        False, "--nightly", help="只执行一次夜间巩固后退出（不消费队列）"
+    ),
+) -> None:
+    """消费 `memory.extract` 队列；`--nightly` 用于计划任务每日巩固。"""
+    from .memory.nightly import run_nightly
+    from .memory.worker import run_worker
+
+    service, storage, redis = _open_memory(load_config())
+    try:
+        if nightly:
+            stats = asyncio.run(
+                run_nightly(
+                    store=service.store,
+                    vector=service.vector,
+                    recall=service.recall,
+                )
+            )
+            console.print(f"[green]夜间巩固完成[/green]：{stats}")
+        else:
+            console.print("[green]记忆 worker 启动[/green]（Ctrl+C 退出）")
+            asyncio.run(run_worker(service))
+    finally:
+        storage.close()
+        if redis is not None:
+            redis.close()
+
+
+@memory_app.command("list")
+def memory_list(
+    username: str = typer.Option(..., "--username", "-u", help="用户名"),
+    limit: int = typer.Option(20, "--limit", help="最多显示条数"),
+) -> None:
+    """按用户列出活跃的长期记忆（验收与排障）。"""
+    service, storage, redis = _open_memory(load_config())
+    try:
+        user = storage.web.get_user_with_hash(username)
+        if user is None:
+            console.print(f"[red]用户不存在[/red]：{username}")
+            raise typer.Exit(code=1)
+        items = service.store.list_active(user["id"], limit)
+    finally:
+        storage.close()
+        if redis is not None:
+            redis.close()
+
+    if not items:
+        console.print(f"[yellow]暂无记忆[/yellow]：{username}")
+        return
+    table = Table(title=f"{username} 的长期记忆（{len(items)} 条）")
+    for column in ("类型", "内容", "重要度", "召回", "更新时间"):
+        table.add_column(column)
+    for item in items:
+        table.add_row(
+            item.type,
+            item.content,
+            f"{item.importance:.2f}",
+            str(item.recall_count),
+            item.updated_at,
+        )
+    console.print(table)
+
+
+@memory_app.command("stats")
+def memory_stats() -> None:
+    """汇总各状态/类型的记忆条数。"""
+    service, storage, redis = _open_memory(load_config())
+    try:
+        stats = service.store.stats()
+    finally:
+        storage.close()
+        if redis is not None:
+            redis.close()
+    console.print_json(json.dumps(stats, ensure_ascii=False))
 
 
 if __name__ == "__main__":

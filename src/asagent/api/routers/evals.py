@@ -4,7 +4,7 @@ import json
 
 from fastapi import APIRouter, Depends, Query
 
-from ..db import WebDB
+from ...storage.protocols import WebStore
 from ..deps import api_error, get_eval_manager, get_web, require_admin
 from ..evals import EvalError, EvalJobManager
 from ..schemas import EvalRunRequest
@@ -39,7 +39,7 @@ async def list_suites(
 async def eval_status(
     admin: dict = Depends(require_admin),
     manager: EvalJobManager = Depends(get_eval_manager),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> dict:
     body = manager.status(admin["id"])
     rows = web.eval_jobs(limit=1)
@@ -51,7 +51,7 @@ async def eval_status(
 async def list_jobs(
     limit: int = Query(20, ge=1, le=100),
     _admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> list[dict]:
     return [_job_out(row) for row in web.eval_jobs(limit=limit)]
 
@@ -60,7 +60,7 @@ async def list_jobs(
 async def get_job(
     job_id: str,
     _admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> dict:
     row = web.eval_job(job_id)
     if row is None:

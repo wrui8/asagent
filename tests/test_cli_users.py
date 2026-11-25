@@ -11,7 +11,10 @@ from asagent.api.security import hash_password, verify_password
 
 def _use_db(tmp_path, monkeypatch) -> WebDB:
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(db_path=db_path))
+    settings = SimpleNamespace(as_storage_backend="sqlite", as_pg_dsn="")
+    monkeypatch.setattr(
+        cli, "load_config", lambda: SimpleNamespace(db_path=db_path, settings=settings)
+    )
     return WebDB(db_path)
 
 

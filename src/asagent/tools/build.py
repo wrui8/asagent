@@ -30,6 +30,7 @@ def build_registry(profile: Profile, config: AppConfig) -> ToolRegistry:
             index_db=config.path(cfg.get("index_db", "data/rag.sqlite3")),
             embedding_model=model,
             top_k=int(cfg.get("top_k", 5)),
+            settings=config.settings,
         )
     elif profile.name == "office":
         from .office.tools import build_office_tools

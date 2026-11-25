@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 from collections.abc import AsyncIterator
@@ -14,13 +15,18 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import AppConfig, load_config
-from ..runtime.checkpoint import CheckpointStore
+from ..memory.policy import PublishPolicy
+from ..memory.publish import MemoryPublisher
+from ..memory.service import build_memory_service
 from ..runtime.state import SessionStatus
+from ..storage import build_storage
+from ..storage.protocols import KernelStore, WebStore
+from ..storage.redis_state import RedisState, RedisWindowLimiter
 from .config import WebSettings, load_web_settings
-from .db import WebDB
 from .evals import EvalJobManager
-from .jobs import JobManager
+from .jobs import HEARTBEAT_TTL_S, JobManager
 from .kb import KBIndexRunner
+from .limiter import SlidingWindowLimiter
 from .routers import (
     approvals,
     audit,
@@ -53,12 +59,24 @@ def _origin_of(value: str) -> str:
     return f"{parts.scheme}://{parts.netloc}".lower()
 
 
-def _recover_zombies(store: CheckpointStore) -> int:
-    """进程重启后，残留的 running 会话不可能再推进，标记为失败。"""
+def _recover_zombies(store: KernelStore, redis: RedisState | None = None) -> int:
+    """进程重启后，残留的 running 会话不可能再推进，标记为失败。
+
+    多 worker 下其他进程可能仍在跑同一会话：Redis 持有 `job:{session}` 锁时跳过，
+    避免启动时的恢复扫描误杀活跃任务。Redis 不可达时同样跳过（宁可不恢复）。
+    """
     count = 0
     for row in store.list_sessions(1000, 0, status=str(SessionStatus.RUNNING)):
+        session_id = row["session_id"]
+        if redis is not None:
+            try:
+                if redis.exists(f"job:{session_id}"):
+                    continue
+            except Exception:  # noqa: BLE001 - 无法确认是否活跃时不冒险标记
+                logger.warning("redis unavailable during recovery, skip %s", session_id)
+                continue
         try:
-            state = store.load_state(row["session_id"])
+            state = store.load_state(session_id)
         except KeyError:
             continue
         if state.status != SessionStatus.RUNNING:
@@ -66,9 +84,52 @@ def _recover_zombies(store: CheckpointStore) -> int:
         state.status = SessionStatus.FAILED
         state.error = "服务重启，任务中断，请重新发起"
         store.save_state(state)
-        store.append(row["session_id"], "error", {"message": state.error})
+        store.append(session_id, "error", {"message": state.error})
         count += 1
     return count
+
+
+def _recover_eval_jobs(web: WebStore, redis: RedisState | None) -> int:
+    """启动时清理残留的 running 评测任务。
+
+    多 worker 下 `eval` 锁存在说明另一个进程正在跑评测，不能标记失败；
+    Redis 不可达时保守跳过。
+    """
+    if redis is not None:
+        try:
+            if redis.exists("eval"):
+                return 0
+        except Exception:  # noqa: BLE001
+            logger.warning("redis unavailable during eval recovery, keep jobs")
+            return 0
+    return web.eval_jobs_recover()
+
+
+def _recover_kb_jobs(web: WebStore, redis: RedisState | None) -> int:
+    """启动时清理残留的 running 索引任务；Redis 锁存在说明另一个 worker 在跑。"""
+    if redis is not None:
+        try:
+            if redis.exists("kb:index"):
+                return 0
+        except Exception:  # noqa: BLE001
+            logger.warning("redis unavailable during kb recovery, keep jobs")
+            return 0
+    count = 0
+    for job in web.kb_jobs(50):
+        if job.get("status") == "running":
+            web.kb_job_finish(
+                job["id"], status="failed", message="服务重启，索引任务中断"
+            )
+            count += 1
+    return count
+
+
+async def _delayed_recover(store: KernelStore, redis: RedisState) -> None:
+    """启动时上一世残留的会话锁尚未过期；等 TTL 过后再清理一次僵尸会话。"""
+    await asyncio.sleep(HEARTBEAT_TTL_S + 5)
+    count = await asyncio.to_thread(_recover_zombies, store, redis)
+    if count:
+        logger.warning("recovered %d zombie session(s) after lock TTL", count)
 
 
 def create_app(
@@ -78,27 +139,71 @@ def create_app(
 ) -> FastAPI:
     config = config or load_config()
     settings = web_settings or load_web_settings(config.root)
-    store = CheckpointStore(config.db_path)
-    web = WebDB(config.db_path)
-    jobs = JobManager(config=config, web=web, store=store, settings=settings)
-    kb_runner = KBIndexRunner(config=config, web=web)
-    eval_manager = EvalJobManager(config=config, web=web)
+    storage = build_storage(config)
+    store, web = storage.kernel, storage.web
+    redis: RedisState | None = None
+    if config.settings.as_redis_url.strip():
+        redis = RedisState(config.settings.as_redis_url)
+    login_limiter = (
+        RedisWindowLimiter(redis, limit=10) if redis else SlidingWindowLimiter(limit=10)
+    )
+    register_limiter = (
+        RedisWindowLimiter(redis, limit=5) if redis else SlidingWindowLimiter(limit=5)
+    )
+    # 记忆子系统：开关关闭时为 None，行为与 v1 完全一致
+    memory_service = build_memory_service(config, storage, redis)
+    publisher: MemoryPublisher | None = None
+    if memory_service is not None:
+        assert redis is not None
+        publisher = MemoryPublisher(
+            policy=PublishPolicy(
+                redis, daily_limit=config.settings.as_memory_daily_extract_limit
+            ),
+            rabbitmq_url=config.settings.as_rabbitmq_url,
+        )
+        logger.info("记忆子系统已启用")
+    jobs = JobManager(
+        config=config,
+        web=web,
+        store=store,
+        settings=settings,
+        redis=redis,
+        memory=memory_service.recall if memory_service else None,
+        publisher=publisher,
+    )
+    kb_runner = KBIndexRunner(config=config, web=web, redis=redis)
+    eval_manager = EvalJobManager(config=config, web=web, redis=redis, store=store)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        recovered = _recover_zombies(store)
+        recovered = _recover_zombies(store, redis)
         if recovered:
             logger.warning("recovered %d interrupted session(s)", recovered)
-        stale_evals = web.eval_jobs_recover()
+        stale_evals = _recover_eval_jobs(web, redis)
         if stale_evals:
             logger.warning("recovered %d interrupted eval job(s)", stale_evals)
+        stale_kb = _recover_kb_jobs(web, redis)
+        if stale_kb:
+            logger.warning("recovered %d interrupted kb job(s)", stale_kb)
+        delayed = (
+            asyncio.create_task(_delayed_recover(store, redis))
+            if redis is not None
+            else None
+        )
         try:
             yield
         finally:
+            if delayed is not None:
+                delayed.cancel()
+                await asyncio.gather(delayed, return_exceptions=True)
             await eval_manager.shutdown()
             await kb_runner.shutdown()
             await jobs.shutdown()
-            store.close()
+            if memory_service is not None:
+                await memory_service.aclose()
+            storage.close()
+            if redis is not None:
+                redis.close()
 
     app = FastAPI(
         title="AS Agent API",
@@ -114,6 +219,10 @@ def create_app(
     app.state.jobs = jobs
     app.state.kb_runner = kb_runner
     app.state.eval_manager = eval_manager
+    app.state.login_limiter = login_limiter
+    app.state.register_limiter = register_limiter
+    app.state.redis = redis
+    app.state.memory = memory_service
 
     origins = settings.origins
     desktop_origins = list(DESKTOP_ORIGINS) if settings.desktop_clients else []

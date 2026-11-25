@@ -5,8 +5,8 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from ...runtime.checkpoint import CheckpointStore
 from ...runtime.state import SessionStatus
+from ...storage.protocols import KernelStore
 from ...tools.base import PermissionLevel
 from ..deps import api_error, current_user, get_jobs, get_store, load_owned_session
 from ..jobs import JobManager
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["approvals"])
 
 
-def _pending(store: CheckpointStore, session_id: str) -> list:
+def _pending(store: KernelStore, session_id: str) -> list:
     """需要人工决策的工具调用：权限高于 READ 且审批状态未定。"""
     result = []
     for inv in store.pending_invocations(session_id):
@@ -41,7 +41,7 @@ def _parse_args(raw: str) -> dict:
 async def list_approvals(
     session_id: str,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
 ) -> list[ApprovalOut]:
     load_owned_session(session_id, store, user)
     return [
@@ -62,7 +62,7 @@ async def decide_approvals(
     session_id: str,
     payload: ApprovalDecision,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
     jobs: JobManager = Depends(get_jobs),
 ) -> list[ApprovalOut]:
     state = load_owned_session(session_id, store, user)

@@ -117,7 +117,230 @@ Get-ScheduledTask -TaskName "ASAgent*"
 - 隧道日志：`runtime/cloudflared-asagent.log`；配置使用 QUIC（见文件头注释）
 - 手工重启栈：`docker compose -f deploy/docker-compose.yml up -d`
 
-## 4. 备份与恢复
+## 4. 中间件（v2 分阶段启用）
+
+`deploy/docker-compose.yml` 从 v2 起支持按 profile 启用中间件，**默认不启动**，
+`api` 服务保持 v1 的 SQLite 单机行为。三组可独立启用，互不强制。
+
+| profile | 服务 | 端口（仅绑 127.0.0.1） | 用途 |
+| --- | --- | --- | --- |
+| `state` | postgres / redis / rabbitmq | 5432 / 6379 / 5672、15672 | 权威库、缓存与锁、记忆队列 |
+| `rag` | tei / milvus | 8081 / 19530、9091 | bge-m3 编码、向量检索 |
+
+> 8 GB 显存实测仅剩约 285 MiB，TEI 必须使用 CPU 镜像；不要给 TEI 传 GPU 参数。
+>
+> Milvus 使用**内置 etcd + 本地磁盘存储**，不再单独部署 etcd 与 MinIO：
+> MinIO 已停止在 Docker Hub 发布社区镜像（quay 仓库也需登录），而 Milvus 2.5
+> 原生支持 `ETCD_USE_EMBED` 与 `common.storageType=local`，单容器即可运行，
+> 内存占用更低。配置见 `deploy/milvus/embedEtcd.yaml` 与 `deploy/milvus/user.yaml`。
+
+### 4.1 准备密码与目录
+
+compose 插值变量写在 **`deploy/.env`**（与 compose 文件同目录，已被 gitignore）：
+
+```dotenv
+AS_PG_DB=asagent
+AS_PG_USER=asagent
+AS_PG_PASSWORD=<随机强密码>
+AS_RABBITMQ_USER=asagent
+AS_RABBITMQ_PASSWORD=<随机强密码>
+BGE_M3_DIR=D:/fishmatrix-llm/models
+```
+
+应用连接串写在**项目根 `.env`**（容器内主机名用服务名；宿主直跑改 `127.0.0.1`，
+其中 TEI 宿主端口为 `8081`，其余端口与容器一致）：
+
+```dotenv
+AS_PG_DSN=postgresql://asagent:<与上面相同>@postgres:5432/asagent
+AS_REDIS_URL=redis://redis:6379/0
+AS_RABBITMQ_URL=amqp://asagent:<与上面相同>@rabbitmq:5672/
+AS_MILVUS_URI=http://milvus:19530
+AS_TEI_URL=http://tei:80
+```
+
+> 两处密码必须一致；任一项缺失时 `--profile` 启动会直接报错（fail-closed），
+> 不会以弱默认密码启动。
+
+### 4.2 启动与探活
+
+```powershell
+# 存储与缓存
+docker compose -f deploy/docker-compose.yml --profile state up -d
+
+# 检索（需 BGE_M3_DIR 下已放置 bge-m3 权重，离线加载）
+# TEI 首次启动要用 CPU 完成权重加载与预热，约 2–5 分钟；`--max-batch-tokens`
+# 默认 2048，降低它会更快启动、更省内存（大请求由 TEI 拆成 micro-batch）
+docker compose -f deploy/docker-compose.yml --profile rag up -d
+
+# 只校验配置，不启动
+docker compose -f deploy/docker-compose.yml --profile state --profile rag config -q
+```
+
+管理员登录后查看 `/api/system/info` 的 `middleware` 字段：
+`up` / `down` / `not_configured`。阶段 0 只验证 TCP 可达；模型是否加载完成、
+集合是否可用在阶段 1 用 TEI `/health` 与 Milvus 集合检查。
+
+### 4.3 数据卷与备份
+
+中间件数据使用 Docker named volume（`asagent_pgdata`、`asagent_redisdata` 等），
+避开 Windows 绑定挂载的权限问题。
+
+- **必须备份**：PG（`pg_dump`）、`data/docs`、`configs`、`evals`，过渡期还包括
+  SQLite `state.db`。计划任务命令改为：
+
+  ```powershell
+  uv run python scripts/backup.py --keep 7 --middleware
+  ```
+
+- **不必备份**：Milvus（向量可由 PG 元数据 + `data/docs` 重建）、
+  RabbitMQ（队列消息可重放）、Redis 派生缓存。
+- **恢复顺序**：PG → `data/docs` → 启动服务 → 触发全量重建索引。
+
+### 4.4 排障
+
+| 现象 | 排查 |
+| --- | --- |
+| `--profile state up` 报缺变量 | `deploy/.env` 是否有 `AS_PG_PASSWORD` 等 |
+| `middleware.postgres=down` | 容器是否 healthy；`.env` DSN 主机名（容器用 `postgres`，宿主用 `127.0.0.1`） |
+| Milvus 起不来 | `docker logs asagent-milvus`；确认 `deploy/milvus/*.yaml` 已挂载；首次启动需 1–2 分钟 |
+| TEI 启动即退出 | `BGE_M3_DIR` 下是否有 `bge-m3` 目录与权重；`docker logs asagent-tei` |
+| TEI 长时间 `Warming up model` | CPU 预热耗时随 `AS_TEI_MAX_BATCH_TOKENS` 增长；保持 1024–2048，勿设 8192 |
+| 端口冲突 | `netstat -ano \| findstr :5432`（依次替换端口） |
+| 内存吃紧 | 先停 `rag` profile；调小 `AS_TEI_MAX_BATCH_TOKENS` / 客户端批大小（实测 TEI 常驻约 5.8 GB，Milvus 约 130 MB） |
+
+### 4.5 切换到 PostgreSQL + 多 worker（阶段 2）
+
+默认仍是 SQLite 单 worker；切换是显式操作，随时可回滚。
+
+前置：
+
+```powershell
+# 宿主直跑时安装连接驱动与客户端
+uv sync --extra rag --extra milvus --extra state
+# 中间件
+docker compose -f deploy/docker-compose.yml --profile state up -d
+```
+
+1) 先备份（含 PG/Redis 的中间件数据）：
+
+```powershell
+uv run python scripts/backup.py --keep 7 --middleware
+```
+
+2) 搬数据（目标非空会拒绝，确认覆盖加 `--force`）：
+
+```powershell
+# 预览各表行数，不写入
+$env:AS_PG_DSN = "postgresql://asagent:<密码>@127.0.0.1:5432/asagent"
+uv run python scripts/migrate_sqlite_to_pg.py --dry-run
+
+# 正式迁移；逐表比较行数与内容哈希，不一致非零退出
+uv run python scripts/migrate_sqlite_to_pg.py
+```
+
+3) 根 `.env` 打开开关（容器部署时主机名用服务名）：
+
+```dotenv
+AS_STORAGE_BACKEND=postgres
+AS_PG_DSN=postgresql://asagent:<密码>@postgres:5432/asagent
+AS_REDIS_URL=redis://redis:6379/0
+AS_WORKERS=2
+```
+
+4) 重启并验证：
+
+```powershell
+docker compose -f deploy/docker-compose.yml up -d
+# 宿主直跑：uv run asagent web --workers 2
+```
+
+- 管理员查看 `/api/system/info`：`middleware.postgres/redis` 为 `up`。
+- 旧账号可直接登录，会话/知识库/评测历史都在。
+- 多 worker 必须同时满足 `AS_STORAGE_BACKEND=postgres` 与 `AS_REDIS_URL`，
+  否则 `asagent web` 直接退出（错误提示会写明缺哪项）。
+- 备份计划任务改为 `uv run python scripts/backup.py --keep 7 --middleware`。
+
+5) 回滚：把 `AS_STORAGE_BACKEND` 改回 `sqlite`、`AS_WORKERS=1` 后重启。
+SQLite 在切换后不再更新，若要再次切回 PG 需重新跑迁移脚本。
+
+### 4.6 切换到 LangGraph 引擎（阶段 3）
+
+默认仍是 v1 手写循环；引擎由 `AS_ENGINE` 选择，API / CLI / 评测共用：
+
+```dotenv
+AS_ENGINE=langgraph                  # legacy（默认）| langgraph
+AS_CHECKPOINTER=redis                # 可选：把每步摘要镜像到 asagent:ckpt:{session_id}
+```
+
+- 切引擎不影响存储与事件契约，前端、SSE、评测报告格式都不变。
+- `AS_CHECKPOINTER=redis` 只写观察用摘要（TTL 24h），**不是**恢复依据；
+  崩溃/审批恢复仍读 KernelStore 的会话状态。
+- 验证：跑一次 `uv run asagent run "数据库里有哪些表？" -p sql`，事件流应包含
+  `session_created → user_input → route_selected → context_built → model_response
+  → tool_call → tool_result → … → final`。
+- 回滚：`AS_ENGINE=legacy` 后重启即可，两个引擎共用同一套事件与存储。
+
+### 4.7 启用记忆子系统（阶段 4）
+
+默认关闭（`AS_MEMORY_ENABLED=false`），关闭时不发布消息、不召回、不启动 worker，
+行为与 v1 完全一致。启用是 fail-closed 的：必须同时具备 **postgres + Redis +
+RabbitMQ + Milvus/TEI**，缺任何一项 API 启动即报错。
+
+前置：已按 §4.5 切到 PostgreSQL，且 `state`、`rag` 两个 profile 均健康。
+
+```dotenv
+# 项目根 .env
+AS_MEMORY_ENABLED=true
+AS_MEMORY_TOP_K=5                 # 每次注入的长期记忆条数
+AS_MEMORY_DAILY_EXTRACT_LIMIT=20  # 每用户每日异步抽取上限（0 表示全部禁用）
+AS_MEMORY_MODEL=deepseek-chat     # 抽取模型（需要可靠的 JSON 输出）
+```
+
+启动 worker（与 api 同一镜像，profile 为 `memory`）：
+
+```powershell
+docker compose -f deploy/docker-compose.yml --profile memory up -d memory-worker
+docker logs -f asagent-memory-worker
+```
+
+夜间巩固（合并近似条目、衰减、归档弱记忆；不物理删除）：
+
+```powershell
+# 容器内一次性执行
+docker compose -f deploy/docker-compose.yml --profile memory run --rm memory-worker `
+  /app/.venv/bin/asagent worker memory --nightly
+
+# 宿主直跑（已 uv sync --extra state --extra milvus，DSN 指向 127.0.0.1）
+uv run asagent worker memory --nightly
+
+# 注册每日 03:47 的计划任务（管理员 PowerShell，可与其他任务一起注册）
+powershell -ExecutionPolicy Bypass -File deploy\windows\install-tasks.ps1 -WithMemoryNightly
+```
+
+触发规则：同一会话用户轮数 ≥ 3、30 秒去抖（同一会话）、每用户每日配额；
+抽取在会话进入 `done` 后异步进行，不阻塞对话。重复消息不会重复抽取（按
+`source_session` 去重）。
+
+验收与排障：
+
+```powershell
+# 查看某用户的活跃记忆（按用户名；需 AS_MEMORY_ENABLED=true）
+uv run asagent memory list --username <用户名> --limit 20
+uv run asagent memory stats
+
+# 队列积压 / 死信
+docker exec asagent-rabbitmq rabbitmqctl list_queues name messages
+# 消费失败的消息进入 memory.dlq；排查后手动转移回 memory.extract
+```
+
+- worker 宕机时消息留在 `memory.extract`，恢复后继续消费，不影响对话。
+- 召回是 fail-open 的：Milvus/TEI 临时不可用时本轮不注入记忆并记录 warning，
+  对话照常进行。
+- 禁用：把 `AS_MEMORY_ENABLED` 改回 `false` 并停 worker
+  （`docker compose --profile memory stop memory-worker`）。PG 记忆表与 Milvus
+  collection 保留，重新开启后立即恢复。
+
+## 5. 备份与恢复
 
 备份内容：`runtime/state.db`（SQLite backup API，WAL 安全）、`data/docs`、
 `configs`、`evals`；每次一个时间戳目录，含 `manifest.json`（sha256/大小）。
@@ -147,7 +370,7 @@ Linux 宿主用 `deploy/linux/backup.sh`（cron 调用，`BACKUP_KEEP` 可覆盖
 > `.env` 默认不备份（含密钥）。确需随备份保存时加 `--include-env`，并自行限制
 > `backups/` 目录权限。
 
-## 5. 升级与维护
+## 6. 升级与维护
 
 `main` 受保护，维护走「开发分支 → PR → 合并」：
 
@@ -261,7 +484,7 @@ AS_APP_RELEASE_NOTES=修复若干问题
 
 版本比较只看 `major.minor.patch`；网络失败或接口不可用时保持静默，不阻塞启动。
 
-## 6. 端到端测试（E2E）
+## 7. 端到端测试（E2E）
 
 `e2e/` 是独立 Node 包，使用 Playwright，不调用真实模型：
 
@@ -276,7 +499,7 @@ npx playwright test          # 自动 seed 临时库并在 8179 端口起独立�
 - 失败时截图在 `e2e/test-results/`；CI 会带 `playwright-report` artifact
 - 定向运行：`npx playwright test tests/kb.spec.ts`
 
-## 7. 排障
+## 8. 排障
 
 | 现象 | 排查 |
 | --- | --- |
@@ -304,7 +527,7 @@ Linux 差异：
   其余静态文件），或直接用 systemd + uvicorn 的 VPS 方案
 - 备份用 cron 调 `deploy/linux/backup.sh`
 
-## 8. 相关文件
+## 9. 相关文件
 
 | 文件 | 作用 |
 | --- | --- |
@@ -319,3 +542,6 @@ Linux 差异：
 | `scripts/seed_e2e.py` | E2E 测试账号与数据重置 |
 | `.github/workflows/ci.yml` | pytest/ruff、web、app、e2e，以及 docker 构建并推送 GHCR |
 | `.github/workflows/release.yml` | `v*` tag 构建 Windows 桌面安装包 |
+| `docs/platform-v2-plan.md` | v2 目标架构、框架图、流程与时序 |
+| `docs/platform-v2-impl.md` | v2 分阶段实施步骤、验证与回滚 |
+| `src/asagent/api/middleware.py` | 中间件 TCP 探活（`/api/system/info`） |

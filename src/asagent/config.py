@@ -64,6 +64,31 @@ class Settings(BaseSettings):
     # 容器部署时 code 沙箱的宿主路径映射：`容器前缀=宿主前缀`，逗号分隔
     as_sandbox_path_map: str = ""
 
+    # ---- 中间件（阶段 0 起逐步启用；默认全部保持 v1 行为）----
+    # 权威库：sqlite（v1）| postgres（阶段 2）
+    as_storage_backend: Literal["sqlite", "postgres"] = "sqlite"
+    as_pg_dsn: str = ""
+    as_redis_url: str = ""
+    as_rabbitmq_url: str = ""
+    # 检索：sqlite（v1 暴力索引）| milvus（阶段 1）
+    as_rag_backend: Literal["sqlite", "milvus"] = "sqlite"
+    as_milvus_uri: str = ""
+    as_tei_url: str = ""
+    as_embedding_dim: int = 1024
+    # 检查点与编排：sqlite/legacy（v1）| redis/langgraph（阶段 3）
+    as_checkpointer: Literal["sqlite", "redis"] = "sqlite"
+    as_engine: Literal["legacy", "langgraph"] = "legacy"
+    # 记忆子系统（阶段 4）；启用需要 postgres + redis + rabbitmq + milvus/tei
+    as_memory_enabled: bool = False
+    as_memory_top_k: int = 5
+    as_memory_daily_extract_limit: int = 20
+    # 抽取使用的模型（结构化 JSON 输出，建议用强模型）
+    as_memory_model: str = "deepseek-chat"
+    # 多 worker（阶段 2）；1 等于 v1 行为
+    as_workers: int = 1
+    # 本地库：索引指纹 / 埋点（阶段 2 起）
+    as_local_db_path: str = "runtime/local.db"
+
 
 @dataclass
 class AppConfig:

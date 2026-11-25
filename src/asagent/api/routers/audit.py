@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from ...runtime.checkpoint import CheckpointStore
 from ...runtime.events import EventType
+from ...storage.protocols import KernelStore
 from ..deps import api_error, current_user, get_store
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
@@ -14,7 +14,7 @@ async def list_audit(
     session_id: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
 ) -> list[dict]:
     """写操作审计。
 

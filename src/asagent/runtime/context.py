@@ -51,6 +51,7 @@ class ContextBuilder:
         messages: Sequence[Message],
         tools: Sequence[ToolSpec] = (),
         aggressive: bool = False,
+        extra_system: str | None = None,
     ) -> list[Message]:
         prepared: list[Message] = []
         limit = self.max_tool_output_chars // (2 if aggressive else 1)
@@ -65,8 +66,11 @@ class ContextBuilder:
 
         prepared = self._fix_tool_pairing(prepared)
 
-        budget =self.max_input_tokens - self.estimate_messages([], tools) - estimate_tokens(
-            system_prompt
+        budget = (
+            self.max_input_tokens
+            - self.estimate_messages([], tools)
+            - estimate_tokens(system_prompt)
+            - estimate_tokens(extra_system or "")
         )
         groups = self._group_turns(prepared)
         total_groups = len(groups)
@@ -84,6 +88,8 @@ class ContextBuilder:
 
         omitted = total_groups - len(kept)
         result = [Message(role="system", content=system_prompt)]
+        if extra_system:
+            result.append(Message(role="system", content=extra_system))
         if omitted > 0:
             result.append(
                 Message(role="system", content=f"（更早的 {omitted} 轮对话已省略）")

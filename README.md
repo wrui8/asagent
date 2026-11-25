@@ -245,6 +245,28 @@ npx expo start --web --port 8082   # 浏览器预览
   删除文档时会立即从索引移除，不必等重建
 - `GET /api/kb/jobs`、`GET /api/kb/audit` 分别查看重建任务与操作记录
 
+### 长期记忆（阶段 4，可选）
+
+默认关闭。开启后会话结束（DONE）时会异步抽取四类稳定信息——`preference` /
+`fact` / `decision` / `entity`——写入 PostgreSQL，并在新会话里按向量相似度召回
+Top-K 注入系统上下文。对话内容始终优先，记忆只作参考。
+
+```dotenv
+AS_MEMORY_ENABLED=true          # 需要 postgres + redis + rabbitmq + milvus/tei
+AS_MEMORY_TOP_K=5
+AS_MEMORY_DAILY_EXTRACT_LIMIT=20
+AS_MEMORY_MODEL=deepseek-chat
+```
+
+```powershell
+uv run asagent worker memory                  # 消费 memory.extract 队列
+uv run asagent worker memory --nightly        # 合并/衰减/归档（计划任务每日执行）
+uv run asagent memory list -u <用户名>         # 验收：查看某用户的记忆
+uv run asagent memory stats
+```
+
+部署细节（compose profile `memory`、夜间任务注册、排障）见 `docs/deploy.md` §4.7。
+
 ## MCP 工具接入
 
 `assistant` profile 的静态工具为空，工具全部由外部 MCP server（stdio）提供：

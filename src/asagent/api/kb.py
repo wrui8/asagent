@@ -11,8 +11,10 @@ from pathlib import Path
 from ..config import AppConfig
 from ..guard.pipeline import looks_like_injection
 from ..profiles.loader import load_profile
-from ..tools.rag.index import RagIndex
-from .db import WebDB
+from ..storage.protocols import WebStore
+from ..storage.redis_state import RedisState
+from ..tools.rag.factory import IndexLike
+from ..tools.rag.factory import make_index as build_index
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +53,10 @@ def kb_paths(config: AppConfig) -> KBPaths:
     )
 
 
-def make_index(config: AppConfig) -> RagIndex:
+def make_index(config: AppConfig) -> IndexLike:
     paths = kb_paths(config)
-    return RagIndex(
+    return build_index(
+        settings=config.settings,
         index_db=paths.index_db,
         docs_dir=paths.docs_dir,
         embedding_model=paths.embedding_model,
@@ -94,10 +97,19 @@ def latest_trash(paths: KBPaths, doc_id: str) -> Path | None:
 class KBIndexRunner:
     """异步重建索引：单飞锁 + 冷却，编码在线程中执行避免阻塞事件循环。"""
 
-    def __init__(self, *, config: AppConfig, web: WebDB, cooldown_s: float = 10.0):
+    def __init__(
+        self,
+        *,
+        config: AppConfig,
+        web: WebStore,
+        cooldown_s: float = 10.0,
+        redis: RedisState | None = None,
+    ):
         self.config = config
         self.web = web
         self.cooldown_s = cooldown_s
+        self.redis = redis
+        self._lock_token: str | None = None
         self._task: asyncio.Task[None] | None = None
         self._last_start = 0.0
 
@@ -116,8 +128,20 @@ class KBIndexRunner:
         remaining = self.cooldown_remaining()
         if remaining > 0:
             raise KBIndexBusy(f"重建过于频繁，请 {remaining:.0f} 秒后再试")
+        token: str | None = None
+        if self.redis is not None:
+            token = self.redis.acquire("kb:index", ttl_s=900)
+            if token is None:
+                raise KBIndexBusy("索引正在重建，请稍候")
+        self._lock_token = token
         self._last_start = time.monotonic()
-        job_id = self.web.kb_job_start(kind="reindex", doc_ids=doc_ids, actor=actor)
+        try:
+            job_id = self.web.kb_job_start(
+                kind="reindex", doc_ids=doc_ids, actor=actor
+            )
+        except Exception:
+            self._release_lock()
+            raise
         self._task = asyncio.create_task(
             self._run(job_id, doc_ids, actor), name=f"kb-reindex:{job_id}"
         )
@@ -141,6 +165,16 @@ class KBIndexRunner:
             message = f"重建失败：{exc}"
             self.web.kb_job_finish(job_id, status="failed", message=message)
             self.web.kb_audit(actor=actor, action="reindex_failed", detail=message)
+        finally:
+            self._release_lock()
+
+    def _release_lock(self) -> None:
+        token, self._lock_token = self._lock_token, None
+        if self.redis is not None and token is not None:
+            try:
+                self.redis.release("kb:index", token)
+            except Exception:  # noqa: BLE001 - 释放失败依赖 TTL 兜底
+                logger.warning("release kb index lock failed")
 
     async def shutdown(self) -> None:
         task = self._task

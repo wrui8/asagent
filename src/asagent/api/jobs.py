@@ -5,16 +5,20 @@ import logging
 from collections.abc import Callable
 
 from ..config import AppConfig
-from ..runtime.checkpoint import CheckpointStore
 from ..runtime.factory import build_runtime
 from ..runtime.loop import AgentRuntime
 from ..runtime.state import SessionState, SessionStatus
+from ..storage.protocols import KernelStore, WebStore
+from ..storage.redis_state import RedisState
 from .config import WebSettings
-from .db import WebDB
 
 logger = logging.getLogger(__name__)
 
 RuntimeFactory = Callable[..., AgentRuntime]
+
+# 会话锁与心跳 TTL：多 worker 下崩溃后最多 60 秒自动释放
+HEARTBEAT_TTL_S = 60
+HEARTBEAT_EVERY_S = 20
 
 
 class JobManager:
@@ -30,29 +34,42 @@ class JobManager:
         self,
         *,
         config: AppConfig,
-        web: WebDB,
-        store: CheckpointStore,
+        web: WebStore,
+        store: KernelStore,
         settings: WebSettings,
         runtime_factory: RuntimeFactory | None = None,
+        redis: RedisState | None = None,
+        memory: object | None = None,
+        publisher: object | None = None,
     ):
         self.config = config
         self.web = web
         self.store = store
         self.settings = settings
         self.runtime_factory = runtime_factory or build_runtime
+        self.redis = redis
+        # 记忆召回器（实现 `section(user_id, query)`），关闭记忆时为 None
+        self.memory = memory
+        self.publisher = publisher
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._owners: dict[str, str] = {}
+        self._tokens: dict[str, str] = {}
         self._sem = asyncio.Semaphore(max(1, settings.global_max_parallel))
 
     # ------------------------------------------------------------------ #
     def is_running(self, session_id: str) -> bool:
         task = self._tasks.get(session_id)
-        return task is not None and not task.done()
+        if task is not None and not task.done():
+            return True
+        # 多 worker：其他进程可能正在跑同一会话
+        return bool(self.redis and self.redis.exists(f"job:{session_id}"))
 
     def running_sessions(self) -> list[str]:
         return [session_id for session_id in self._tasks if self.is_running(session_id)]
 
     def running_for(self, owner_id: str) -> int:
+        if self.redis is not None:
+            return self.redis.busy_count(owner_id)
         return sum(
             1
             for session_id, uid in self._owners.items()
@@ -115,6 +132,14 @@ class JobManager:
     ) -> None:
         if self.is_running(session_id):
             raise RuntimeError("该会话已在运行")
+        if self.redis is not None:
+            token = self.redis.acquire(
+                f"job:{session_id}", ttl_s=HEARTBEAT_TTL_S
+            )
+            if token is None:
+                raise RuntimeError("该会话已在运行")
+            self._tokens[session_id] = token
+            self.redis.add_busy(owner_id, session_id)
         self._owners[session_id] = owner_id
         self._tasks[session_id] = asyncio.create_task(
             self._run(
@@ -157,10 +182,18 @@ class JobManager:
         resume: bool,
         state: SessionState | None,
     ) -> None:
+        heartbeat = asyncio.create_task(
+            self._heartbeat(session_id), name=f"heartbeat:{session_id}"
+        )
         try:
             async with self._sem:
                 runtime = self.runtime_factory(
-                    self.config, profile, max_cost_cny=max_cost_cny
+                    self.config,
+                    profile,
+                    max_cost_cny=max_cost_cny,
+                    store=self.store,
+                    redis=self.redis,
+                    memory=self.memory,
                 )
                 try:
                     await runtime.run(
@@ -173,6 +206,8 @@ class JobManager:
                     )
                 finally:
                     await runtime.aclose()
+            # 会话完成后异步触发记忆抽取（去抖/配额在 policy 内判断）
+            await self._publish_memory(session_id, owner_id)
         except asyncio.CancelledError:
             self._mark_failed(session_id, "用户取消")
             raise
@@ -180,9 +215,52 @@ class JobManager:
             logger.exception("agent job failed: %s", session_id)
             self._mark_failed(session_id, f"任务异常：{exc}")
         finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
             self._tasks.pop(session_id, None)
             self._owners.pop(session_id, None)
+            self._release(session_id, owner_id)
             self._record_cost(session_id, owner_id)
+
+    async def _heartbeat(self, session_id: str) -> None:
+        token = self._tokens.get(session_id)
+        if self.redis is None or token is None:
+            return
+        while True:
+            await asyncio.sleep(HEARTBEAT_EVERY_S)
+            try:
+                self.redis.renew(
+                    f"job:{session_id}", token, ttl_s=HEARTBEAT_TTL_S
+                )
+            except Exception:  # noqa: BLE001 - 续期失败让锁自然过期，不中断任务
+                logger.warning("heartbeat renew failed: %s", session_id)
+
+    def _release(self, session_id: str, owner_id: str) -> None:
+        if self.redis is None:
+            self._tokens.pop(session_id, None)
+            return
+        token = self._tokens.pop(session_id, None)
+        try:
+            if token is not None:
+                self.redis.release(f"job:{session_id}", token)
+            self.redis.remove_busy(owner_id, session_id)
+        except Exception:  # noqa: BLE001 - 释放失败依赖 TTL 兜底
+            logger.warning("release redis job lock failed: %s", session_id)
+
+    async def _publish_memory(self, session_id: str, owner_id: str) -> None:
+        """任务成功结束后投递抽取消息；任何失败都只记录日志。"""
+        if self.publisher is None:
+            return
+        try:
+            state = self.store.load_state(session_id)
+        except KeyError:
+            return
+        try:
+            published, reason = await self.publisher.maybe_publish(state, owner_id)
+            if not published and reason not in ("not_done", ""):
+                logger.info("记忆发布跳过: %s %s", session_id, reason)
+        except Exception:  # noqa: BLE001 - 记忆是旁路能力，不影响任务结果
+            logger.warning("记忆发布失败: %s", session_id, exc_info=True)
 
     def _mark_failed(self, session_id: str, message: str) -> None:
         try:
