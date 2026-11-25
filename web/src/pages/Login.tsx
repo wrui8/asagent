@@ -4,6 +4,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Background } from "../components/Background";
 import { errorMessage } from "../lib/errors";
 import { IS_TAURI } from "../lib/platform";
+import { IS_MOBILE_HOST } from "../lib/mobile-host";
 import { useAuth } from "../stores/auth";
 import { useUI } from "../stores/ui";
 
@@ -188,7 +189,9 @@ export function Login() {
               </div>
               <div className="row" style={{ marginBottom: 17 }}>
                 <span style={{ fontSize: 12, color: "var(--muted)" }}>
-                  {IS_TAURI
+                  {IS_MOBILE_HOST
+                    ? "手机端使用系统安全存储保持登录，浏览器预览使用本机存储"
+                    : IS_TAURI
                     ? "桌面端使用系统安全存储保存刷新令牌（30 天）"
                     : "登录状态通过 httpOnly 刷新令牌保持 30 天"}
                 </span>

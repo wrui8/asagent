@@ -8,7 +8,7 @@ import { Sidebar } from "./Sidebar";
 import { Toasts } from "./Toasts";
 import { Topbar } from "./Topbar";
 
-export function Splash({ label = "正在连接控制台…" }: { label?: string }) {
+export function Splash({ label = "正在连接控制台…", onRetry }: { label?: string; onRetry?: () => void }) {
   return (
     <div className="splash">
       <div className="splash-inner">
@@ -18,8 +18,9 @@ export function Splash({ label = "正在连接控制台…" }: { label?: string 
         <div className="brand-name" style={{ fontSize: 18 }}>
           asagent
         </div>
-        <div className="skeleton" style={{ width: 180 }} />
-        <div style={{ fontSize: 12, color: "var(--faint)" }}>{label}</div>
+        {!onRetry && <div className="skeleton" style={{ width: 180 }} />}
+        <div role="status" style={{ fontSize: 12, color: "var(--muted)" }}>{label}</div>
+        {onRetry && <button className="btn btn-primary" onClick={onRetry}>重试</button>}
       </div>
     </div>
   );

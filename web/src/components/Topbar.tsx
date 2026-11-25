@@ -11,7 +11,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { errorMessage } from "../lib/errors";
-import { routeMeta } from "../lib/nav";
+import { NAV_ITEMS, routeMeta } from "../lib/nav";
 import {
   checkDesktopUpdate,
   installDesktopUpdate,
@@ -19,6 +19,8 @@ import {
 } from "../lib/platform";
 import { useAuth } from "../stores/auth";
 import { useUI } from "../stores/ui";
+
+const NARROW_ADMIN_LINKS = NAV_ITEMS.filter((item) => item.adminOnly && item.hideMobile && item.to !== "/admin");
 
 export function Topbar() {
   const location = useLocation();
@@ -68,11 +70,18 @@ export function Topbar() {
 
   useEffect(() => {
     if (!menuOpen) return;
-    const onDown = (event: MouseEvent) => {
+    const onDown = (event: PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
     };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [menuOpen]);
 
   const initial = user?.username ? user.username.slice(0, 1).toUpperCase() : "AS";
@@ -83,13 +92,15 @@ export function Topbar() {
       <span className="crumb">{meta.crumb}</span>
       <div className="spacer" />
       <button
-        className="search"
+        className="search command-trigger"
         style={{ border: "1px solid var(--border)" }}
         onClick={() => setCmdkOpen(true)}
         title="打开命令面板"
+        aria-label="打开命令面板"
+        aria-haspopup="dialog"
       >
         <Search size={14} />
-        <span style={{ flex: 1, textAlign: "left" }}>搜索或跳转…</span>
+        <span className="command-label" style={{ flex: 1, textAlign: "left" }}>搜索或跳转…</span>
         <kbd>Ctrl K</kbd>
       </button>
       <button
@@ -103,27 +114,24 @@ export function Topbar() {
         {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
       </button>
       <div className="dropdown" ref={menuRef}>
-        <div
+        <button
+          type="button"
           className="user-chip"
+          aria-label={user?.role === "admin" ? "账户与管理" : "账户菜单"}
+          aria-expanded={menuOpen}
+          aria-controls={menuOpen ? "account-menu" : undefined}
           onClick={() => setMenuOpen((open) => !open)}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              setMenuOpen((open) => !open);
-            }
-          }}
         >
-          <div className="avatar">{initial}</div>
-          <div className="user-meta">
+          <span className="avatar">{initial}</span>
+          <span className="user-meta">
             <b>{user?.username ?? "—"}</b>
             <span>{user?.role === "admin" ? "管理员" : "普通用户"}</span>
-          </div>
+          </span>
+          {user?.role === "admin" ? <span className="mobile-only">管理</span> : null}
           <ChevronDown size={13} style={{ color: "var(--faint)" }} />
-        </div>
+        </button>
         {menuOpen ? (
-          <div className="user-menu">
+          <div className="user-menu" id="account-menu">
             <div className="user-menu-head">
               <b>{user?.username ?? "—"}</b>
               <span>
@@ -153,16 +161,27 @@ export function Topbar() {
               {theme === "dark" ? "切换到浅色" : "切换到深色"}
             </button>
             {user?.role === "admin" ? (
-              <button
-                className="user-menu-item"
-                onClick={() => {
-                  setMenuOpen(false);
-                  navigate("/admin");
-                }}
-              >
-                <Users size={14} />
-                用户与邀请码
-              </button>
+              <>
+                {NARROW_ADMIN_LINKS.map(({ to, label, icon: Icon }) => (
+                  <button key={to} className="user-menu-item mobile-only" onClick={() => {
+                    setMenuOpen(false);
+                    navigate(to);
+                  }}>
+                    <Icon size={14} />
+                    {label}
+                  </button>
+                ))}
+                <button
+                  className="user-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    navigate("/admin");
+                  }}
+                >
+                  <Users size={14} />
+                  用户与邀请码
+                </button>
+              </>
             ) : null}
             {IS_TAURI ? (
               <button

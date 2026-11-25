@@ -1,6 +1,6 @@
 # asagent mobile
 
-Expo SDK 58 + expo-router 移动端，接入 `asagent web` 的多用户 API。
+Expo SDK 58 移动客户端，接入 `asagent web` 的多用户 API。iOS 和浏览器预览直接使用 `web/src` 的控制台页面、主题及权限逻辑。iOS 将页面随应用打包，在 WKWebView 中显示，登录、API 请求、复制和轨迹文件分享经原生层执行。
 
 ```bash
 npm install
@@ -12,7 +12,8 @@ npx tsc --noEmit                   # 类型检查
 - API 地址构建时写死：`src/lib/config.ts`（联调用 `EXPO_PUBLIC_API_BASE` 覆盖）
 - 原生端 refresh token 存 SecureStore，Web 预览降级 localStorage
 - 本地 Web 预览需后端设置 `AS_ALLOWED_ORIGINS=http://localhost:8082`
-- 页面：`src/app/login.tsx`、`index.tsx`（会话列表）、`new.tsx`、`session/[id].tsx`
+- iOS 和 Web 预览的页面入口在 `../web/src/App.tsx`。会话、对话、知识库和审计位于手机底栏。管理员点右上角账号菜单可以进入评测、MCP 与系统、用户与邀请码。Android 继续使用 `src/app/` 下的 React Native 页面。
+- `npm ci` 安装依赖时会构建共享控制台，Metro 启动时会重新打包。开发中修改 `web/src` 后，在 `app` 目录运行 `npm run console:build` 即可更新正在运行的移动预览。
 - 构建需 Node ≥ 22.13（Expo SDK 58 要求）
 
 ## 在 Windows 上预览 iPhone 客户端
@@ -28,4 +29,4 @@ npx.cmd expo start --web --port 8082
 
 有 iPhone 时，在电脑上运行 `npx.cmd expo login` 及 `npx.cmd expo start --go`，手机的 Expo Go 登录同一 Expo 账号后扫码。手机也要能直接访问 ASAgent 后端。当前 Expo SDK 58 支持 iOS 16.4 起的设备。[Expo 真机预览](https://docs.expo.dev/get-started/start-developing/) · [Expo SDK 58](https://docs.expo.dev/versions/v58.0.0/)
 
-开发回归在 `app` 下执行 `npm.cmd test`、`npx.cmd tsc --noEmit`、`npm.cmd run lint` 和 `npx.cmd expo export --platform ios`。[iPhone 开发计划与验收记录](../docs/superpowers/plans/2026-11-25-ios-app.md)
+开发回归在 `app` 下执行 `npm.cmd test`、`npx.cmd tsc --noEmit`、`npm.cmd run lint` 和 `npx.cmd expo export --platform ios`。在 `e2e` 下安装 npm 依赖和 Playwright 的 Chromium、WebKit 后，运行 `npm.cmd run test:mobile` 可用独立测试库验证两种角色的手机操作。[iPhone 开发计划与验收记录](../docs/superpowers/plans/2026-11-25-ios-app.md)

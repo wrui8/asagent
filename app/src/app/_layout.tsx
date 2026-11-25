@@ -1,12 +1,13 @@
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
-import { Pressable, StyleSheet, Text } from "react-native";
+import { Platform, Pressable, StyleSheet, Text } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { colors } from "@/lib/theme";
 import { checkAppUpdate } from "@/lib/update";
+import ConsoleHost from "../console/ConsoleHost";
 
 export default function RootLayout() {
   useEffect(() => {
@@ -15,10 +16,12 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <AuthProvider>
-        <StatusBar style="light" />
-        <AppStack />
-      </AuthProvider>
+      {Platform.OS === "android" ? (
+        <AuthProvider>
+          <StatusBar style="light" />
+          <AppStack />
+        </AuthProvider>
+      ) : <ConsoleHost />}
     </SafeAreaProvider>
   );
 }

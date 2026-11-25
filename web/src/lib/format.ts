@@ -1,4 +1,5 @@
 import type { SessionStatus } from "./types";
+import { callMobile, IS_MOBILE_HOST } from "./mobile-host";
 
 export interface StatusMeta {
   label: string;
@@ -105,6 +106,7 @@ export function profileLabel(name: string): string {
 }
 
 export function copyText(text: string): Promise<void> {
+  if (IS_MOBILE_HOST) return callMobile<void>("copyText", text);
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
   const el = document.createElement("textarea");
   el.value = text;

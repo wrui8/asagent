@@ -1,0 +1,83 @@
+import { expect, test, type Page } from "@playwright/test";
+import { ADMIN, USER, type Account } from "../helpers";
+
+async function openConsole(page: Page, account: Account) {
+  await page.goto("/");
+  const ui = page.frameLocator("iframe");
+  await ui.getByPlaceholder("wangrui").fill(account.username);
+  await ui.locator('input[type="password"]').fill(account.password);
+  await ui.locator('button[type="submit"]').click();
+  await expect(ui.locator(".user-chip")).toContainText(account.username);
+  return ui;
+}
+
+test("普通账号可切换主题、管理知识文档、查看审计和恢复登录", async ({ page }) => {
+  const ui = await openConsole(page, USER);
+  await expect(ui.getByPlaceholder("按标题或 session id 搜索")).toBeVisible();
+  const theme = await ui.locator("html").getAttribute("data-theme");
+  await ui.getByRole("button", { name: "切换主题", exact: true }).click();
+  await expect(ui.locator("html")).toHaveAttribute("data-theme", theme === "light" ? "dark" : "light");
+  await ui.getByRole("link", { name: "知识库", exact: true }).click();
+  await ui.getByRole("button", { name: "新建文档" }).click();
+  const modal = ui.locator(".modal");
+  const doc = "mobile-" + Date.now();
+  await modal.getByPlaceholder("faq").fill(doc);
+  await modal.getByPlaceholder("留空则取正文首个标题").fill(doc);
+  await modal.locator("textarea").fill("# 移动端验收\n通过手机预览创建知识文档。");
+  await modal.getByRole("button", { name: "保存文档" }).click();
+  await expect(ui.locator("tr", { hasText: doc })).toBeVisible();
+  await page.reload();
+  await expect(ui.locator("tr", { hasText: doc })).toBeVisible();
+  await expect(ui.locator("html")).toHaveAttribute("data-theme", theme === "light" ? "dark" : "light");
+  page.once("dialog", (dialog) => dialog.accept());
+  const row = ui.locator("tr", { hasText: doc });
+  await row.getByTitle("移入回收站").click();
+  await expect(row.getByText("已删除", { exact: true })).toBeVisible();
+  await row.getByRole("button", { name: "恢复" }).click();
+  await expect(row.getByRole("button", { name: "编辑" })).toBeVisible();
+  await ui.getByRole("link", { name: "审计", exact: true }).click();
+  await expect(ui.getByText("还没有可审计的会话", { exact: true })).toBeVisible();
+  await ui.getByRole("button", { name: "账户菜单" }).click();
+  await expect(ui.getByRole("button", { name: "用户与邀请码" })).toHaveCount(0);
+  await ui.getByRole("button", { name: "退出登录" }).click();
+  await expect(ui.getByPlaceholder("wangrui")).toBeVisible();
+});
+
+test("管理员从手机菜单进入评测、系统、账号治理并生成邀请码", async ({ page }) => {
+  const ui = await openConsole(page, ADMIN);
+  const menu = ui.getByRole("button", { name: "账户与管理" });
+  await menu.click();
+  await ui.getByRole("button", { name: "评测", exact: true }).click();
+  await expect(ui.getByText("场景与评测集", { exact: true })).toBeVisible();
+  await menu.click();
+  await ui.getByRole("button", { name: "MCP 与系统", exact: true }).click();
+  await expect(ui.getByText("运行路径", { exact: true })).toBeVisible();
+  await menu.click();
+  await ui.getByRole("button", { name: "用户与邀请码", exact: true }).click();
+  const user = ui.locator("tr", { hasText: USER.username });
+  await user.getByRole("button", { name: "编辑" }).click();
+  await expect(ui.locator(".modal").getByText("每日评测次数（0 表示不限）")).toBeVisible();
+  const limit = ui.locator(".modal .field").filter({ hasText: "每日评测次数" }).locator("input");
+  await limit.fill("17");
+  await ui.locator(".modal").getByRole("button", { name: "保存", exact: true }).click();
+  await expect(ui.getByText("账号已更新")).toBeVisible();
+  await user.getByRole("button", { name: "编辑" }).click();
+  await expect(limit).toHaveValue("17");
+  await ui.locator(".modal").getByRole("button", { name: "取消" }).click();
+  await ui.getByRole("button", { name: "生成邀请码" }).first().click();
+  await ui.locator(".modal").getByRole("button", { name: "生成", exact: true }).click();
+  await expect(ui.getByText("邀请码已生成")).toBeVisible();
+  const invite = await ui.locator(".modal .codebox").innerText();
+  await ui.getByRole("button", { name: "完成", exact: true }).click();
+  await menu.click();
+  await ui.getByRole("button", { name: "退出登录" }).click();
+  await ui.getByRole("button", { name: "邀请码注册" }).click();
+  const username = `mobile-${Date.now()}`;
+  await ui.getByPlaceholder("INV-XXXX-XXXX").fill(invite.trim());
+  await ui.getByPlaceholder("至少 4 个字符").fill(username);
+  await ui.getByPlaceholder("至少 12 位").fill(USER.password);
+  await ui.locator('button[type="submit"]').click();
+  await expect(ui.locator(".user-chip")).toContainText(username);
+  await page.goto("/#/admin");
+  await expect(ui.getByText("需要管理员权限")).toBeVisible();
+});

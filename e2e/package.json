@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
+    "test:mobile": "playwright test --config mobile.config.ts",
     "test:headed": "playwright test --headed",
     "report": "playwright show-report"
   },

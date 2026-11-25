@@ -1,4 +1,4 @@
-import { LogOut, Moon, Plus, RefreshCw, Search } from "lucide-react";
+import { LogOut, Moon, Plus, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { NAV_ITEMS } from "../lib/nav";
@@ -132,16 +132,18 @@ export function Cmdk() {
         if (event.target === event.currentTarget) setOpen(false);
       }}
     >
-      <div className="cmdk-box">
+      <div className="cmdk-box" role="dialog" aria-modal="true" aria-label="命令面板">
         <div className="cmdk-input">
           <Search size={16} style={{ color: "var(--faint)" }} />
           <input
             ref={inputRef}
             value={query}
+            aria-label="搜索命令"
             placeholder="跳转页面、执行操作…"
             autoComplete="off"
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
               if (event.key === "ArrowDown") {
                 event.preventDefault();
                 setIndex((i) => Math.min(i + 1, Math.max(filtered.length - 1, 0)));
@@ -154,6 +156,14 @@ export function Cmdk() {
               }
             }}
           />
+          <button
+            type="button"
+            className="icon-btn mobile-only"
+            aria-label="关闭命令面板"
+            onClick={() => setOpen(false)}
+          >
+            <X size={16} />
+          </button>
         </div>
         <div className="cmdk-list">
           {filtered.length === 0 ? (
@@ -162,16 +172,17 @@ export function Cmdk() {
             </div>
           ) : (
             filtered.map((item, i) => (
-              <div
+              <button
+                type="button"
                 key={item.key}
                 className={`cmd-item ${i === index ? "on" : ""}`}
                 onPointerMove={() => setIndex(i)}
                 onClick={() => runAt(i)}
               >
-                <span className="ic">{icons[item.key] ?? item.ic}</span>
+                <span className="ic" aria-hidden="true">{icons[item.key] ?? item.ic}</span>
                 {item.label}
-                <span className="kbd">{i === index ? "↵" : ""}</span>
-              </div>
+                <span className="kbd" aria-hidden="true">{i === index ? "↵" : ""}</span>
+              </button>
             ))
           )}
         </div>

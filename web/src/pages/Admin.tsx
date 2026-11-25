@@ -41,6 +41,9 @@ import { Tilt } from "../components/Tilt";
 import { KpiCard } from "../components/KpiCard";
 
 type UserModal = { mode: "create" } | { mode: "edit"; user: User } | null;
+type QuotaField = "daily_cost_limit" | "max_cost_per_session" | "concurrent_sessions" | "eval_daily_limit";
+type QuotaPatch = Partial<Record<QuotaField, number>>;
+const quotaKey = (userId: string) => ["quota", userId] as const;
 
 export function Admin() {
   const me = useAuth((s) => s.user);
@@ -61,18 +64,15 @@ export function Admin() {
 
   const quotaQueries = useQueries({
     queries: users.map((user) => ({
-      queryKey: ["quota", user.id],
-      queryFn: () => fetchQuota(user.id),
+      queryKey: quotaKey(user.id),
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchQuota(user.id, signal),
       staleTime: 30_000,
       enabled: me?.role === "admin",
     })),
   });
 
-  const quotaMap = new Map<string, Quota>();
-  users.forEach((user, index) => {
-    const quota = quotaQueries[index]?.data;
-    if (quota) quotaMap.set(user.id, quota);
-  });
+  const quotaMap = new Map(users.map((user, index) => [user.id, quotaQueries[index]]));
+  const editingQuota = userModal?.mode === "edit" ? quotaMap.get(userModal.user.id) : undefined;
 
   const invitesQuery = useQuery({
     queryKey: ["invites"],
@@ -180,7 +180,7 @@ export function Admin() {
             </thead>
             <tbody>
               {users.map((user) => {
-                const quota = quotaMap.get(user.id);
+                const quota = quotaMap.get(user.id)?.data;
                 return (
                   <tr key={user.id}>
                     <td>
@@ -203,11 +203,11 @@ export function Admin() {
                     <td className="mono" style={{ fontSize: 12 }}>
                       {quota?.daily_cost_limit != null
                         ? fmtMoney(quota.daily_cost_limit)
-                        : "不限"}
+                        : quota ? "不限" : "—"}
                     </td>
                     <td className="num">{quota?.concurrent_sessions ?? "—"}</td>
                     <td className="num">
-                      {quota?.eval_daily_limit ? quota.eval_daily_limit : "不限"}
+                      {quota ? quota.eval_daily_limit || "不限" : "—"}
                       {quota?.eval_used_today ? (
                         <div className="cell-sub">今日 {quota.eval_used_today}</div>
                       ) : null}
@@ -328,13 +328,25 @@ export function Admin() {
       {userModal ? (
         <UserForm
           state={userModal}
-          quota={userModal.mode === "edit" ? quotaMap.get(userModal.user.id) : undefined}
+          quota={editingQuota?.data}
+          quotaFailed={editingQuota?.isError ?? false}
+          retryQuota={() => void editingQuota?.refetch()}
           selfId={me.id}
           onClose={() => setUserModal(null)}
-          onDone={() => {
-            setUserModal(null);
+          onDone={async (saved, changes) => {
+            if (userModal.mode === "edit" && Object.keys(changes).length) {
+              const filter = { queryKey: quotaKey(saved.id), exact: true };
+              await queryClient.cancelQueries(filter);
+              queryClient.setQueryData<Quota>(filter.queryKey, (previous) =>
+                previous && { ...previous, ...changes },
+              );
+              void queryClient.invalidateQueries(filter);
+            }
+            queryClient.setQueryData<User[]>(["users"], (previous) => previous?.map((user) =>
+              user.id === saved.id ? saved : user,
+            ));
+            setUserModal((current) => current === userModal ? null : current);
             void queryClient.invalidateQueries({ queryKey: ["users"] });
-            void queryClient.invalidateQueries({ queryKey: ["quotas"] });
           }}
         />
       ) : null}
@@ -393,15 +405,19 @@ export function Admin() {
 function UserForm({
   state,
   quota,
+  quotaFailed,
+  retryQuota,
   selfId,
   onClose,
   onDone,
 }: {
   state: Exclude<UserModal, null>;
   quota?: Quota;
+  quotaFailed: boolean;
+  retryQuota: () => void;
   selfId: string;
   onClose: () => void;
-  onDone: () => void;
+  onDone: (saved: User, changes: QuotaPatch) => Promise<void>;
 }) {
   const toast = useUI((s) => s.toast);
   const editing = state.mode === "edit";
@@ -409,27 +425,17 @@ function UserForm({
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>(editing ? state.user.role : "user");
   const [disabled, setDisabled] = useState(editing ? state.user.disabled : false);
-  const [dailyLimit, setDailyLimit] = useState(
-    quota?.daily_cost_limit != null ? String(quota.daily_cost_limit) : "",
-  );
-  const [sessionLimit, setSessionLimit] = useState(
-    quota?.max_cost_per_session != null ? String(quota.max_cost_per_session) : "",
-  );
-  const [concurrency, setConcurrency] = useState(
-    quota?.concurrent_sessions != null ? String(quota.concurrent_sessions) : "",
-  );
-  const [evalLimit, setEvalLimit] = useState(
-    quota ? String(quota.eval_daily_limit ?? 0) : "",
-  );
+  const [draft, setDraft] = useState<Partial<Record<QuotaField, string>>>({});
+  const dailyLimit = draft.daily_cost_limit ?? String(quota?.daily_cost_limit ?? "");
+  const sessionLimit = draft.max_cost_per_session ?? String(quota?.max_cost_per_session ?? "");
+  const concurrency = draft.concurrent_sessions ?? String(quota?.concurrent_sessions ?? "");
+  const evalLimit = draft.eval_daily_limit ?? String(quota?.eval_daily_limit ?? "");
+  const setQuotaField = (field: QuotaField, value: string) =>
+    setDraft((previous) => ({ ...previous, [field]: value }));
   const [error, setError] = useState("");
 
   const save = useMutation({
-    mutationFn: async () => {
-      const quotaBody: Record<string, number> = {};
-      if (dailyLimit.trim()) quotaBody.daily_cost_limit = Number(dailyLimit);
-      if (sessionLimit.trim()) quotaBody.max_cost_per_session = Number(sessionLimit);
-      if (concurrency.trim()) quotaBody.concurrent_sessions = Number(concurrency);
-      if (evalLimit.trim()) quotaBody.eval_daily_limit = Number(evalLimit);
+    mutationFn: async (changes: QuotaPatch) => {
       if (!editing) {
         return createUser({
           username: username.trim(),
@@ -441,12 +447,12 @@ function UserForm({
         role,
         disabled,
         ...(password ? { password } : {}),
-        ...quotaBody,
+        ...changes,
       });
     },
-    onSuccess: () => {
+    onSuccess: async (saved, changes) => {
+      await onDone(saved, changes);
       toast(editing ? "账号已更新" : "账号已创建", "ok");
-      onDone();
     },
     onError: (err) => setError(errorMessage(err, "保存失败")),
   });
@@ -486,7 +492,11 @@ function UserForm({
         return;
       }
     }
-    save.mutate();
+    // Only send explicitly edited limits so a concurrent update of another field survives.
+    const changes = Object.fromEntries(Object.entries(draft)
+      .filter(([, value]) => value.trim())
+      .map(([field, value]) => [field, Number(value)]));
+    save.mutate(changes);
   };
 
   return (
@@ -564,8 +574,8 @@ function UserForm({
           <input
             className="input"
             value={dailyLimit}
-            disabled={!editing}
-            onChange={(event) => setDailyLimit(event.target.value)}
+            disabled={!editing || !quota}
+            onChange={(event) => setQuotaField("daily_cost_limit", event.target.value)}
             placeholder={editing ? "留空则沿用当前值" : "创建后可在编辑中设置"}
           />
         </div>
@@ -574,8 +584,8 @@ function UserForm({
           <input
             className="input"
             value={sessionLimit}
-            disabled={!editing}
-            onChange={(event) => setSessionLimit(event.target.value)}
+            disabled={!editing || !quota}
+            onChange={(event) => setQuotaField("max_cost_per_session", event.target.value)}
             placeholder={editing ? "留空则沿用当前值" : "创建后可在编辑中设置"}
           />
         </div>
@@ -584,8 +594,8 @@ function UserForm({
           <input
             className="input"
             value={concurrency}
-            disabled={!editing}
-            onChange={(event) => setConcurrency(event.target.value)}
+            disabled={!editing || !quota}
+            onChange={(event) => setQuotaField("concurrent_sessions", event.target.value)}
             placeholder={editing ? "留空则沿用当前值" : "创建后可在编辑中设置"}
           />
         </div>
@@ -594,12 +604,20 @@ function UserForm({
           <input
             className="input"
             value={evalLimit}
-            disabled={!editing}
-            onChange={(event) => setEvalLimit(event.target.value)}
+            disabled={!editing || !quota}
+            onChange={(event) => setQuotaField("eval_daily_limit", event.target.value)}
             placeholder={editing ? "留空则沿用当前值" : "创建后可在编辑中设置"}
           />
         </div>
       </div>
+      {editing && !quota && (
+        <div role="status" className="row hint">
+          {quotaFailed ? <>
+            配额加载失败，账号信息仍可编辑。
+            <button className="btn btn-sm" onClick={retryQuota}>重新加载配额</button>
+          </> : "正在加载配额…"}
+        </div>
+      )}
       {isSelf ? (
         <p className="hint">不能禁用或降级当前登录的管理员账号。</p>
       ) : null}

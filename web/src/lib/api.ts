@@ -4,6 +4,7 @@ import {
   loadDesktopRefreshToken,
   saveDesktopRefreshToken,
 } from "./platform";
+import { callMobile, IS_MOBILE_HOST, requestMobile } from "./mobile-host";
 import type {
   AgentEvent,
   Approval,
@@ -34,7 +35,7 @@ import type {
 
 const TOKEN_KEY = "asagent.access";
 
-let accessToken: string | null = sessionStorage.getItem(TOKEN_KEY);
+let accessToken: string | null = IS_MOBILE_HOST ? null : sessionStorage.getItem(TOKEN_KEY);
 let refreshFlight: Promise<boolean> | null = null;
 
 export function getAccessToken(): string | null {
@@ -42,6 +43,7 @@ export function getAccessToken(): string | null {
 }
 
 export function setAccessToken(token: string | null): void {
+  if (IS_MOBILE_HOST) return;
   accessToken = token;
   if (token) sessionStorage.setItem(TOKEN_KEY, token);
   else sessionStorage.removeItem(TOKEN_KEY);
@@ -148,6 +150,8 @@ export async function request<T>(
     signal,
   } = options;
 
+  if (IS_MOBILE_HOST) return requestMobile<T>(path, { method, body }, signal);
+
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (IS_TAURI) headers["X-Client"] = "desktop";
@@ -175,7 +179,8 @@ export async function request<T>(
 }
 
 /* ------------------------------ 认证 ------------------------------ */
-export async function login(username: string, password: string): Promise<TokenResponse> {
+export async function login(username: string, password: string): Promise<Pick<TokenResponse, "user">> {
+  if (IS_MOBILE_HOST) return { user: await callMobile<User>("login", username, password) };
   const data = await request<TokenResponse>("/api/auth/login", {
     method: "POST",
     body: { username, password },
@@ -192,7 +197,10 @@ export async function register(
   username: string,
   password: string,
   inviteCode: string,
-): Promise<TokenResponse> {
+): Promise<Pick<TokenResponse, "user">> {
+  if (IS_MOBILE_HOST) {
+    return { user: await callMobile<User>("register", username, password, inviteCode) };
+  }
   const data = await request<TokenResponse>("/api/auth/register", {
     method: "POST",
     body: { username, password, invite_code: inviteCode },
@@ -206,6 +214,10 @@ export async function register(
 }
 
 export async function logout(): Promise<void> {
+  if (IS_MOBILE_HOST) {
+    if (!await callMobile<boolean>("logout")) throw new Error("退出登录失败，请重试");
+    return;
+  }
   try {
     const refresh = IS_TAURI ? await loadDesktopRefreshToken() : null;
     await request<void>("/api/auth/logout", {
@@ -247,16 +259,16 @@ export function fetchSessions(query: SessionQuery = {}): Promise<Session[]> {
   return request<Session[]>(`/api/sessions${qs ? `?${qs}` : ""}`);
 }
 
-export function fetchSession(id: string): Promise<Session> {
-  return request<Session>(`/api/sessions/${id}`);
+export function fetchSession(id: string, signal?: AbortSignal): Promise<Session> {
+  return request<Session>(`/api/sessions/${id}`, { signal });
 }
 
-export function fetchMessages(id: string): Promise<Message[]> {
-  return request<Message[]>(`/api/sessions/${id}/messages`);
+export function fetchMessages(id: string, signal?: AbortSignal): Promise<Message[]> {
+  return request<Message[]>(`/api/sessions/${id}/messages`, { signal });
 }
 
-export function fetchEvents(id: string, afterSeq = 0): Promise<AgentEvent[]> {
-  return request<AgentEvent[]>(`/api/sessions/${id}/events?after_seq=${afterSeq}`);
+export function fetchEvents(id: string, afterSeq = 0, signal?: AbortSignal): Promise<AgentEvent[]> {
+  return request<AgentEvent[]>(`/api/sessions/${id}/events?after_seq=${afterSeq}`, { signal });
 }
 
 export interface CreateSessionBody {
@@ -272,8 +284,8 @@ export function createSession(
   return request("/api/sessions", { method: "POST", body });
 }
 
-export function cancelSession(id: string): Promise<unknown> {
-  return request(`/api/sessions/${id}/cancel`, { method: "POST" });
+export function cancelSession(id: string, signal?: AbortSignal): Promise<unknown> {
+  return request(`/api/sessions/${id}/cancel`, { method: "POST", signal });
 }
 
 export function resumeSession(id: string): Promise<unknown> {
@@ -292,8 +304,8 @@ export function fetchArtifact(
 }
 
 /* ------------------------------ 审批 ------------------------------ */
-export function fetchApprovals(id: string): Promise<Approval[]> {
-  return request<Approval[]>(`/api/sessions/${id}/approvals`);
+export function fetchApprovals(id: string, signal?: AbortSignal): Promise<Approval[]> {
+  return request<Approval[]>(`/api/sessions/${id}/approvals`, { signal });
 }
 
 export function decideApproval(
@@ -301,10 +313,12 @@ export function decideApproval(
   callId: string,
   approved: boolean,
   resume = true,
+  signal?: AbortSignal,
 ): Promise<Approval[]> {
   return request<Approval[]>(`/api/sessions/${id}/approvals`, {
     method: "POST",
     body: { call_id: callId, approved, resume },
+    signal,
   });
 }
 
@@ -401,8 +415,8 @@ export function patchUser(
   return request<User>(`/api/users/${userId}`, { method: "PATCH", body });
 }
 
-export function fetchQuota(userId: string): Promise<Quota> {
-  return request<Quota>(`/api/users/${userId}/quota`);
+export function fetchQuota(userId: string, signal?: AbortSignal): Promise<Quota> {
+  return request<Quota>(`/api/users/${userId}/quota`, { signal });
 }
 
 export function fetchInvites(): Promise<Invite[]> {
