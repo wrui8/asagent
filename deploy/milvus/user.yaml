@@ -1,0 +1,6 @@
+# 覆盖 milvus.yaml 的用户配置：向量与索引落本地磁盘，不依赖对象存储。
+# storageType 可选 local / remote / opendal；local 的数据目录取自 localStorage.path。
+common:
+  storageType: local
+localStorage:
+  path: /var/lib/milvus/data/

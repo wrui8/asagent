@@ -64,16 +64,16 @@ RUN if [ -n "$TORCH_WHEEL_MIRROR" ]; then \
       sed -i "s|https://files.pythonhosted.org|$PYPI_FILES_MIRROR|g" uv.lock; \
     fi
 RUN if [ "$WITH_RAG" = "1" ]; then \
-      uv sync --frozen --no-install-project --no-dev --extra rag; \
+      uv sync --frozen --no-install-project --no-dev --extra rag --extra milvus --extra state; \
     else \
-      uv sync --frozen --no-install-project --no-dev; \
+      uv sync --frozen --no-install-project --no-dev --extra state; \
     fi
 
 COPY src/ src/
 RUN if [ "$WITH_RAG" = "1" ]; then \
-      uv sync --frozen --no-dev --extra rag; \
+      uv sync --frozen --no-dev --extra rag --extra milvus --extra state; \
     else \
-      uv sync --frozen --no-dev; \
+      uv sync --frozen --no-dev --extra state; \
     fi
 
 COPY configs/ configs/

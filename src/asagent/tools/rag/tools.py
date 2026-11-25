@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from ..base import PermissionLevel, Tool, ToolContext, ToolError, ToolResult
-from .index import RagIndex
+from .factory import IndexLike, make_index
+
+if TYPE_CHECKING:
+    from ...config import Settings
 
 _MAX_SNIPPET_CHARS = 1200
 
@@ -21,7 +25,7 @@ class ListDocsTool(Tool[_NoArgs]):
     permission = int(PermissionLevel.READ)
     timeout_s = 10.0
 
-    def __init__(self, index: RagIndex):
+    def __init__(self, index: IndexLike):
         self.index = index
 
     async def execute(self, args: _NoArgs, ctx: ToolContext) -> ToolResult:
@@ -42,7 +46,7 @@ class SearchDocsTool(Tool[SearchDocsArgs]):
     permission = int(PermissionLevel.READ)
     timeout_s = 20.0
 
-    def __init__(self, index: RagIndex, default_top_k: int = 5):
+    def __init__(self, index: IndexLike, default_top_k: int = 5):
         self.index = index
         self.default_top_k = default_top_k
 
@@ -90,7 +94,7 @@ class ReadDocTool(Tool[ReadDocArgs]):
     permission = int(PermissionLevel.READ)
     timeout_s = 10.0
 
-    def __init__(self, index: RagIndex):
+    def __init__(self, index: IndexLike):
         self.index = index
 
     async def execute(self, args: ReadDocArgs, ctx: ToolContext) -> ToolResult:
@@ -110,8 +114,14 @@ def build_rag_tools(
     index_db: Path,
     embedding_model: str,
     top_k: int = 5,
+    settings: Settings | None = None,
 ) -> list[Tool]:
-    index = RagIndex(index_db=index_db, docs_dir=docs_dir, embedding_model=embedding_model)
+    index = make_index(
+        settings=settings,
+        index_db=index_db,
+        docs_dir=docs_dir,
+        embedding_model=embedding_model,
+    )
     index.ensure()
     return [
         ListDocsTool(index),

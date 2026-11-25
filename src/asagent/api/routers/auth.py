@@ -5,10 +5,17 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
+from ...storage.protocols import WebStore
 from ..config import WebSettings
-from ..db import WebDB
-from ..deps import api_error, current_user, get_settings, get_web
-from ..limiter import SlidingWindowLimiter
+from ..deps import (
+    Limiter,
+    api_error,
+    current_user,
+    get_login_limiter,
+    get_register_limiter,
+    get_settings,
+    get_web,
+)
 from ..schemas import LoginRequest, RegisterRequest, TokenResponse, UserOut
 from ..security import (
     hash_password,
@@ -20,9 +27,6 @@ from ..security import (
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-_login_limiter = SlidingWindowLimiter(limit=10, window_s=60)
-_register_limiter = SlidingWindowLimiter(limit=5, window_s=60)
 
 
 class RefreshRequest(BaseModel):
@@ -55,7 +59,7 @@ def _issue_tokens(
     response: Response,
     user: dict,
     settings: WebSettings,
-    web: WebDB,
+    web: WebStore,
     *,
     include_refresh: bool = False,
 ) -> TokenResponse:
@@ -93,10 +97,11 @@ async def register(
     payload: RegisterRequest,
     request: Request,
     response: Response,
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     settings: WebSettings = Depends(get_settings),
+    limiter: Limiter = Depends(get_register_limiter),
 ) -> TokenResponse:
-    if not _register_limiter.allow(_client_key(request)):
+    if not limiter.allow(_client_key(request)):
         raise api_error(429, "注册过于频繁，请稍后再试", "rate_limited")
     user, error = web.register_with_invite(
         username=payload.username,
@@ -118,10 +123,11 @@ async def login(
     payload: LoginRequest,
     request: Request,
     response: Response,
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     settings: WebSettings = Depends(get_settings),
+    limiter: Limiter = Depends(get_login_limiter),
 ) -> TokenResponse:
-    if not _login_limiter.allow(_client_key(request, payload.username)):
+    if not limiter.allow(_client_key(request, payload.username)):
         raise api_error(429, "登录尝试过于频繁，请稍后再试", "rate_limited")
     user = web.get_user_with_hash(payload.username)
     if user is None or not verify_password(payload.password, user["password_hash"]):
@@ -140,7 +146,7 @@ async def refresh(
     request: Request,
     response: Response,
     payload: RefreshRequest | None = None,
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     settings: WebSettings = Depends(get_settings),
 ) -> TokenResponse:
     token = payload.refresh_token if payload else None
@@ -172,7 +178,7 @@ async def logout(
     request: Request,
     response: Response,
     payload: RefreshRequest | None = None,
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     settings: WebSettings = Depends(get_settings),
 ) -> Response:
     token = payload.refresh_token if payload else None

@@ -16,7 +16,8 @@ from ..eval.report import EvalReport
 from ..eval.runner import EvalRunner
 from ..eval.schema import load_cases
 from ..profiles.loader import available_profiles, load_profile
-from .db import WebDB
+from ..storage.protocols import KernelStore, WebStore
+from ..storage.redis_state import RedisState
 
 logger = logging.getLogger(__name__)
 
@@ -35,13 +36,20 @@ class EvalJobManager:
         self,
         *,
         config: AppConfig,
-        web: WebDB,
+        web: WebStore,
         reports_dir: Path | None = None,
+        redis: RedisState | None = None,
+        store: KernelStore | None = None,
     ):
         self.config = config
         self.web = web
+        self.store = store
         self.reports_dir = reports_dir or (config.root / "runtime" / "evals")
-        self.runner_factory: Callable[[], EvalRunner] = lambda: EvalRunner(config)
+        self.redis = redis
+        self._lock_token: str | None = None
+        self.runner_factory: Callable[[], EvalRunner] = lambda: EvalRunner(
+            config, store=self.store
+        )
         self._task: asyncio.Task[None] | None = None
         self._job_id: str | None = None
 
@@ -121,13 +129,23 @@ class EvalJobManager:
                 f"今日评测次数已用完（{used}/{daily}）", "eval_quota", 429
             )
 
-        job_id = self.web.eval_job_start(
-            actor=actor,
-            profile=profile,
-            models=models,
-            repeat=repeat,
-            limit_cases=limit,
-        )
+        token: str | None = None
+        if self.redis is not None:
+            token = self.redis.acquire("eval", ttl_s=3600)
+            if token is None:
+                raise EvalError("已有评测任务在运行，请等待完成", "eval_busy", 409)
+        self._lock_token = token
+        try:
+            job_id = self.web.eval_job_start(
+                actor=actor,
+                profile=profile,
+                models=models,
+                repeat=repeat,
+                limit_cases=limit,
+            )
+        except Exception:
+            self._release_lock()
+            raise
         self._job_id = job_id
         self._task = asyncio.create_task(
             self._run(
@@ -172,6 +190,15 @@ class EvalJobManager:
             )
         finally:
             self._job_id = None
+            self._release_lock()
+
+    def _release_lock(self) -> None:
+        token, self._lock_token = self._lock_token, None
+        if self.redis is not None and token is not None:
+            try:
+                self.redis.release("eval", token)
+            except Exception:  # noqa: BLE001 - 释放失败依赖 TTL 兜底
+                logger.warning("release eval lock failed")
 
     def _write_report(self, report: EvalReport) -> str:
         self.reports_dir.mkdir(parents=True, exist_ok=True)

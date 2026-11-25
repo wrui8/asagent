@@ -1,0 +1,6 @@
+# Milvus standalone 内置 etcd 配置（由 ETCD_CONFIG_PATH 指向）
+listen-client-urls: http://127.0.0.1:2379
+advertise-client-urls: http://127.0.0.1:2379
+quota-backend-bytes: 4294967296
+auto-compaction-mode: revision
+auto-compaction-retention: "1000"

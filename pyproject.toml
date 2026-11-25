@@ -20,6 +20,7 @@ dependencies = [
     "uvicorn>=0.54.0",
     "pwdlib[argon2]>=0.4.2",
     "pyjwt>=2.15.1",
+    "langgraph>=0.2,<2",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,18 @@ rag = [
     "sentence-transformers>=3.0",
     "numpy>=1.26",
     "torch>=2.15,<2.16",
+]
+# Milvus 向量后端（阶段 1）；TEI 编码通过 HTTP 调用，无额外 Python 依赖。
+# 客户端大版本需与服务端一致：compose 固定 milvusdb/milvus:v2.5.x
+milvus = [
+    "pymilvus>=2.4,<2.6",
+]
+# 存储分层（阶段 2）：PostgreSQL 权威库 + Redis 共享状态；驱动均延迟导入。
+# 未启用 AS_STORAGE_BACKEND=postgres / AS_REDIS_URL 时保持 SQLite 单机行为。
+state = [
+    "aio-pika>=9.4",
+    "psycopg[binary,pool]>=3.2",
+    "redis>=5.0",
 ]
 
 [[tool.uv.index]]
@@ -46,6 +59,7 @@ dev = [
     "respx>=0.22",
     "ruff>=0.8",
     "mypy>=1.13",
+    "fakeredis[lua]>=2.41.0",
 ]
 
 [project.scripts]

@@ -130,3 +130,40 @@ def test_unique_stamp_dir_uses_suffix(tmp_path):
     (dest / "20261123-031700").mkdir()
     result = backup._unique_stamp_dir(dest, datetime(2026, 11, 23, 3, 17, 0))
     assert result.name == "20261123-031700-2"
+
+
+def test_middleware_backup_skipped_without_docker(tmp_path, monkeypatch):
+    root = _make_project(tmp_path)
+    monkeypatch.setattr(backup, "_docker_available", lambda: False)
+
+    out = backup.create_backup(
+        root=root,
+        dest=root / "backups",
+        db_path=root / "runtime" / "state.db",
+        middleware=True,
+    )
+
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["middleware"] == {}
+    assert not (out / "postgres.sql").exists()
+    assert not (out / "redis.rdb").exists()
+
+
+def test_middleware_backup_records_ok_failed_skipped(tmp_path, monkeypatch):
+    root = _make_project(tmp_path)
+    monkeypatch.setattr(backup, "_docker_available", lambda: True)
+    monkeypatch.setattr(
+        backup, "_container_running", lambda name: name == backup.PG_CONTAINER
+    )
+    monkeypatch.setattr(backup, "dump_postgres", lambda container, dest: False)
+    monkeypatch.setattr(backup, "dump_redis", lambda container, dest: True)
+
+    out = backup.create_backup(
+        root=root,
+        dest=root / "backups",
+        db_path=root / "runtime" / "state.db",
+        middleware=True,
+    )
+
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["middleware"] == {"postgres": "failed", "redis": "skipped"}

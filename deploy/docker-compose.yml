@@ -65,3 +65,198 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # 阶段 4：记忆抽取 worker（消费 memory.extract，写入 PG + Milvus）。
+  # 启用需同时挂 --profile memory --profile state --profile rag，
+  # 并在 .env 中把 AS_MEMORY_ENABLED=true（api 侧同样需要）。
+  memory-worker:
+    image: ${ASAGENT_IMAGE:-ghcr.io/wrui8/asagent:latest}
+    profiles: ["memory"]
+    container_name: asagent-memory-worker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      AS_MEMORY_ENABLED: "true"
+      TZ: Asia/Shanghai
+    command: ["/app/.venv/bin/asagent", "worker", "memory"]
+    volumes:
+      - ../runtime:/app/runtime
+      - ../configs:/app/configs:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ------------------------------------------------------------------ #
+  # 中间件（阶段 0 起）：按 profile 启用，api 不硬依赖
+  #   --profile state : PostgreSQL / Redis / RabbitMQ
+  #   --profile rag   : TEI / Milvus（内置 etcd + 本地磁盘存储）
+  # 端口一律只绑 127.0.0.1；密码等插值变量写在 deploy/.env。
+  # 应用侧连接串写在项目根 .env：容器内用服务名，宿主直跑改 127.0.0.1。
+  # ------------------------------------------------------------------ #
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["state"]
+    container_name: asagent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AS_PG_DB:-asagent}
+      POSTGRES_USER: ${AS_PG_USER:-asagent}
+      POSTGRES_PASSWORD: ${AS_PG_PASSWORD:?set AS_PG_PASSWORD in deploy/.env}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AS_PG_USER:-asagent} -d ${AS_PG_DB:-asagent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["state"]
+    container_name: asagent-redis
+    restart: unless-stopped
+    # volatile-lru：只淘汰带 TTL 的键，避免误删 checkpoint 等持久状态
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - volatile-lru
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    profiles: ["state"]
+    container_name: asagent-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${AS_RABBITMQ_USER:-asagent}
+      RABBITMQ_DEFAULT_PASS: ${AS_RABBITMQ_PASSWORD:?set AS_RABBITMQ_PASSWORD in deploy/.env}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ------------------------------------------------------------------ #
+  # RAG：TEI（bge-m3，CPU）+ Milvus standalone
+  # 显存已实测仅剩 285 MiB，embedding 必须走 CPU。
+  # ------------------------------------------------------------------ #
+  tei:
+    image: ${AS_TEI_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-latest}
+    profiles: ["rag"]
+    container_name: asagent-tei
+    restart: unless-stopped
+    command:
+      - --model-id
+      - /data/bge-m3
+      - --port
+      - "80"
+      # bge-m3 的 1_Pooling/config.json 使用 CLS pooling（1024 维）
+      - --pooling
+      - cls
+      # CPU 上前向耗时随 batch token 线性增长；2048 足够覆盖 500 字符的
+      # chunk（TEI 会把更大的请求拆成多个 micro-batch）
+      - --max-batch-tokens
+      - "${AS_TEI_MAX_BATCH_TOKENS:-2048}"
+      - --max-client-batch-size
+      - "${AS_TEI_MAX_CLIENT_BATCH:-16}"
+    volumes:
+      # 含 bge-m3 权重的宿主目录；离线加载，不在启动时下载
+      - ${BGE_M3_DIR:-D:/fishmatrix-llm/models}:/data:ro
+    ports:
+      - "127.0.0.1:8081:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Milvus standalone：内置 etcd + 本地磁盘存储，只需一个容器。
+  # 原方案的 etcd / MinIO 镜像已无法获取（MinIO 停止在 Docker Hub 发布社区镜像，
+  # quay 亦需登录）；Milvus 2.5 原生支持 embedded etcd 与 common.storageType=local，
+  # 进程更少、内存更省，语义等价（向量数据仍可由 docs + 元数据重建）。
+  milvus:
+    image: ${AS_MILVUS_IMAGE:-milvusdb/milvus:v2.5.4}
+    profiles: ["rag"]
+    container_name: asagent-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      ETCD_CONFIG_PATH: /milvus/configs/embedEtcd.yaml
+      COMMON_STORAGETYPE: local
+      LOCALSTORAGE_PATH: /var/lib/milvus/data/
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
+    volumes:
+      - milvusdata:/var/lib/milvus
+      - ./milvus/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro
+      - ./milvus/user.yaml:/milvus/configs/user.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+  redisdata:
+  rabbitmqdata:
+  milvusdata:

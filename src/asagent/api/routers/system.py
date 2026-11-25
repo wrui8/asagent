@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends
 
 from ... import __version__
@@ -15,6 +17,7 @@ from ..deps import (
     require_admin,
 )
 from ..jobs import JobManager
+from ..middleware import probe_middleware
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -71,6 +74,8 @@ async def system_info(
     providers = {
         name: config.provider_available(name) for name in config.models_file.providers
     }
+    # 阶段 0 只做 TCP 可达性；未配置的中间件显示 not_configured，不算故障
+    middleware = await asyncio.to_thread(probe_middleware, config.settings)
     return {
         "root": str(config.root),
         "db_path": str(config.db_path),
@@ -90,6 +95,7 @@ async def system_info(
         "cookie_secure": settings.cookie_secure,
         "jwt_secret_is_default": settings.jwt_secret == "dev-only-change-me",
         "running_jobs": len(jobs.running_sessions()),
+        "middleware": middleware,
     }
 
 

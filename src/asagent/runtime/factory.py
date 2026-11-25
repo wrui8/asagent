@@ -9,6 +9,7 @@ from ..models.client import build_client
 from ..models.router import ModelRouter
 from ..obs.trace import TraceWriter
 from ..profiles.loader import load_profile
+from ..storage.protocols import KernelStore
 from ..tools.build import build_registry
 from .checkpoint import CheckpointStore
 from .context import ContextBuilder
@@ -25,6 +26,9 @@ def build_runtime(
     workspace: Path | None = None,
     tests_dir: Path | None = None,
     max_cost_cny: float | None = None,
+    store: KernelStore | None = None,
+    redis: Any | None = None,
+    memory: Any | None = None,
 ) -> AgentRuntime:
     profile = load_profile(profile_name, project_root=config.root)
     registry = build_registry(profile, config)
@@ -43,7 +47,7 @@ def build_runtime(
         from ..tools.mcp import MCPManager, parse_server_configs
 
         mcp_manager = MCPManager(parse_server_configs(raw_mcp), root=config.root)
-    store = CheckpointStore(config.db_path)
+    kernel_store = store if store is not None else CheckpointStore(config.db_path)
     tracer = TraceWriter(config.trace_dir)
     router = ModelRouter(config, profile.model_policy)
     guard = GuardPipeline()
@@ -67,11 +71,20 @@ def build_runtime(
 
         client_factory = _mock_factory
 
-    return AgentRuntime(
+    engine_kwargs: dict[str, Any] = {}
+    engine_cls: type[AgentRuntime] = AgentRuntime
+    if config.settings.as_engine == "langgraph":
+        from .graph import GraphEngine
+
+        engine_cls = GraphEngine
+        if redis is not None and config.settings.as_checkpointer == "redis":
+            engine_kwargs["redis"] = redis
+
+    return engine_cls(
         config=config,
         profile=profile,
         registry=registry,
-        store=store,
+        store=kernel_store,
         tracer=tracer,
         router=router,
         guard=guard,
@@ -83,4 +96,6 @@ def build_runtime(
         tests_dir=tests_dir,
         mcp_manager=mcp_manager,
         max_cost_cny=effective_max_cost,
+        memory=memory,
+        **engine_kwargs,
     )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from ...storage.protocols import WebStore
 from ..config import WebSettings
-from ..db import WebDB
 from ..deps import api_error, get_settings, get_web, require_admin
 from ..schemas import UserCreateRequest, UserOut, UserPatchRequest
 from ..security import hash_password
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api", tags=["admin"])
 
 
 def _merge_quota(
-    web: WebDB, settings: WebSettings, user_id: str, payload: UserPatchRequest
+    web: WebStore, settings: WebSettings, user_id: str, payload: UserPatchRequest
 ) -> dict:
     current = web.get_quota(user_id)
     base = {
@@ -41,7 +41,7 @@ def _merge_quota(
 @router.get("/users", response_model=list[UserOut])
 async def list_users(
     _admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> list[UserOut]:
     return [UserOut(**user) for user in web.list_users()]
 
@@ -50,7 +50,7 @@ async def list_users(
 async def create_user(
     payload: UserCreateRequest,
     _admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> UserOut:
     if web.get_user_with_hash(payload.username) is not None:
         raise api_error(409, "用户名已被占用", "username_taken")
@@ -67,7 +67,7 @@ async def patch_user(
     user_id: str,
     payload: UserPatchRequest,
     admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     settings: WebSettings = Depends(get_settings),
 ) -> UserOut:
     target = web.get_user(user_id)
@@ -114,7 +114,7 @@ async def patch_user(
 async def get_user_quota(
     user_id: str,
     _admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     settings: WebSettings = Depends(get_settings),
 ) -> dict:
     if web.get_user(user_id) is None:

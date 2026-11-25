@@ -7,11 +7,10 @@ from fastapi.responses import StreamingResponse
 
 from ...config import AppConfig
 from ...profiles.loader import load_profile
-from ...runtime.checkpoint import CheckpointStore
 from ...runtime.state import SessionState, SessionStatus
+from ...storage.protocols import KernelStore, WebStore
 from ...tools.base import PermissionLevel
 from ..config import WebSettings
-from ..db import WebDB
 from ..deps import (
     api_error,
     current_user,
@@ -78,8 +77,8 @@ async def list_sessions(
     status: str | None = None,
     all: bool = False,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
-    web: WebDB = Depends(get_web),
+    store: KernelStore = Depends(get_store),
+    web: WebStore = Depends(get_web),
 ) -> list[SessionOut]:
     owner_id = None if (user["role"] == "admin" and all) else user["id"]
     hidden = web.hidden_sessions(user["id"])
@@ -105,8 +104,8 @@ async def list_sessions(
 async def create_session(
     payload: SessionCreateRequest,
     user: dict = Depends(current_user),
-    web: WebDB = Depends(get_web),
-    store: CheckpointStore = Depends(get_store),
+    web: WebStore = Depends(get_web),
+    store: KernelStore = Depends(get_store),
     jobs: JobManager = Depends(get_jobs),
     settings: WebSettings = Depends(get_settings),
     config: AppConfig = Depends(get_config),
@@ -157,7 +156,7 @@ async def create_session(
 async def get_session(
     session_id: str,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
 ) -> SessionOut:
     state = load_owned_session(session_id, store, user)
     return _session_out(state)
@@ -167,7 +166,7 @@ async def get_session(
 async def get_messages(
     session_id: str,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
 ) -> list[MessageOut]:
     state = load_owned_session(session_id, store, user)
     return [MessageOut(**message.model_dump()) for message in state.messages]
@@ -178,7 +177,7 @@ async def get_events(
     session_id: str,
     after_seq: int = Query(0, ge=0),
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
 ) -> list[dict]:
     load_owned_session(session_id, store, user)
     return [event.model_dump() for event in store.events(session_id, after_seq)]
@@ -189,7 +188,7 @@ async def stream_events(
     session_id: str,
     after_seq: int = Query(0, ge=0),
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
     settings: WebSettings = Depends(get_settings),
 ) -> StreamingResponse:
     load_owned_session(session_id, store, user)
@@ -233,7 +232,7 @@ async def stream_events(
 async def resume_session(
     session_id: str,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
     jobs: JobManager = Depends(get_jobs),
 ) -> SessionAccepted:
     state = load_owned_session(session_id, store, user)
@@ -268,7 +267,7 @@ async def resume_session(
 async def cancel_session(
     session_id: str,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
     jobs: JobManager = Depends(get_jobs),
 ) -> dict:
     load_owned_session(session_id, store, user)
@@ -281,8 +280,8 @@ async def cancel_session(
 async def delete_session(
     session_id: str,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
-    web: WebDB = Depends(get_web),
+    store: KernelStore = Depends(get_store),
+    web: WebStore = Depends(get_web),
 ) -> None:
     state = load_owned_session(session_id, store, user)
     if state.status not in (SessionStatus.DONE, SessionStatus.FAILED):
@@ -295,7 +294,7 @@ async def get_artifact(
     session_id: str,
     artifact_id: str,
     user: dict = Depends(current_user),
-    store: CheckpointStore = Depends(get_store),
+    store: KernelStore = Depends(get_store),
 ) -> dict:
     load_owned_session(session_id, store, user)
     owner = store.artifact_session(artifact_id)

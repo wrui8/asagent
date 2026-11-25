@@ -9,6 +9,7 @@ from pathlib import Path
 from ..config import AppConfig
 from ..profiles.loader import load_profile
 from ..runtime.factory import build_runtime
+from ..storage.protocols import KernelStore
 from ..tools.base import ToolResult
 from .graders import CaseRun, grade_case
 from .report import CaseResult, EvalReport
@@ -27,8 +28,10 @@ async def _auto_approve(name: str, args: dict) -> bool:
 
 
 class EvalRunner:
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, *, store: KernelStore | None = None):
         self.config = config
+        # 外部注入时（API 进程 / CLI）复用共享存储，不在用例结束时关闭
+        self.store = store
         self._workspace_seq = 0
 
     async def run_suite(
@@ -103,6 +106,7 @@ class EvalRunner:
             approver=_auto_approve if case.auto_approve else None,
             workspace=workspace,
             tests_dir=tests_dir,
+            store=self.store,
         )
         before = _file_hash(db_path)
         started = time.perf_counter()
@@ -173,7 +177,8 @@ class EvalRunner:
             elapsed = time.perf_counter() - started
             _ = elapsed
             await runtime.aclose()
-            runtime.store.close()
+            if self.store is None:
+                runtime.store.close()
 
     @staticmethod
     def _collect_tool_calls(events) -> list[tuple[str | None, dict]]:

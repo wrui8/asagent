@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
 
-from ..db import WebDB
+from ...storage.protocols import WebStore
 from ..deps import api_error, get_web, require_admin
 from ..schemas import InviteCreated, InviteCreateRequest, InviteOut
 from ..security import new_invite_code, sha256_hex
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api", tags=["admin"])
 @router.get("/invites", response_model=list[InviteOut])
 async def list_invites(
     _admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> list[InviteOut]:
     return [InviteOut(**row) for row in web.list_invites()]
 
@@ -24,7 +24,7 @@ async def list_invites(
 async def create_invite(
     payload: InviteCreateRequest,
     admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> InviteCreated:
     code = new_invite_code()
     expires_at = (
@@ -45,7 +45,7 @@ async def create_invite(
 async def revoke_invite(
     invite_id: str,
     _admin: dict = Depends(require_admin),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
 ) -> InviteOut:
     if not web.revoke_invite(invite_id):
         raise api_error(404, "邀请码不存在", "not_found")

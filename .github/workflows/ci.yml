@@ -7,6 +7,23 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 阶段 2：PostgreSQL 仓储用例需要真实实例；未提供 DSN 时自动 skip
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: asagent
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: asagent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asagent -d asagent_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AS_TEST_PG_DSN: postgresql://asagent:ci-test-only@127.0.0.1:5432/asagent_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,7 +35,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen --extra rag
+        run: uv sync --frozen --extra rag --extra milvus --extra state
 
       - name: Lint
         run: uv run ruff check .
@@ -48,6 +65,23 @@ jobs:
           grep -E "^E +" pytest.log | head -10 | while IFS= read -r line; do
             echo "::error title=pytest-error::${line:0:900}"
           done || true
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 只做语法与插值校验，不启动容器；dummy 密码仅用于满足 fail-closed 占位
+      - name: Validate compose profiles
+        env:
+          AS_PG_PASSWORD: ci-dummy-not-a-secret
+          AS_RABBITMQ_PASSWORD: ci-dummy-not-a-secret
+        run: |
+          docker compose -f deploy/docker-compose.yml config -q
+          docker compose -f deploy/docker-compose.yml --profile state config -q
+          docker compose -f deploy/docker-compose.yml --profile rag config -q
+          docker compose -f deploy/docker-compose.yml --profile memory config -q
 
   web:
     runs-on: ubuntu-latest

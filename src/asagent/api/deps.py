@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+from typing import Protocol
+
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ..config import AppConfig
-from ..runtime.checkpoint import CheckpointStore
 from ..runtime.state import SessionState
+from ..storage.protocols import KernelStore, WebStore
 from .config import WebSettings
-from .db import WebDB
 from .evals import EvalJobManager
 from .jobs import JobManager
 from .kb import KBIndexRunner
 from .security import decode_access_token
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+class Limiter(Protocol):
+    """进程内滑窗与 Redis 固定窗口都只要求 allow(key)。"""
+
+    def allow(self, key: str) -> bool: ...
 
 
 def api_error(status_code: int, message: str, code: str) -> HTTPException:
@@ -30,12 +37,20 @@ def get_settings(request: Request) -> WebSettings:
     return request.app.state.web_settings
 
 
-def get_web(request: Request) -> WebDB:
+def get_web(request: Request) -> WebStore:
     return request.app.state.web
 
 
-def get_store(request: Request) -> CheckpointStore:
+def get_store(request: Request) -> KernelStore:
     return request.app.state.store
+
+
+def get_login_limiter(request: Request) -> Limiter:
+    return request.app.state.login_limiter
+
+
+def get_register_limiter(request: Request) -> Limiter:
+    return request.app.state.register_limiter
 
 
 def get_jobs(request: Request) -> JobManager:
@@ -52,7 +67,7 @@ def get_eval_manager(request: Request) -> EvalJobManager:
 
 async def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-    web: WebDB = Depends(get_web),
+    web: WebStore = Depends(get_web),
     settings: WebSettings = Depends(get_settings),
 ) -> dict:
     if credentials is None:
@@ -73,7 +88,7 @@ async def require_admin(user: dict = Depends(current_user)) -> dict:
 
 
 def load_owned_session(
-    session_id: str, store: CheckpointStore, user: dict
+    session_id: str, store: KernelStore, user: dict
 ) -> SessionState:
     """越权与不存在统一返回 404，避免泄露会话是否存在。"""
     try:

@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from asagent.api.app import create_app
 from asagent.api.config import WebSettings
-from asagent.api.routers.auth import _login_limiter, _register_limiter
 from asagent.api.security import hash_password
 from asagent.config import AppConfig
 from asagent.runtime.state import SessionState, SessionStatus
@@ -43,9 +42,6 @@ class FakeRuntime:
 
 
 def make_client(config: AppConfig, **overrides) -> TestClient:
-    # 限流器是模块级状态；每个测试客户端从干净的窗口开始
-    _login_limiter.reset()
-    _register_limiter.reset()
     settings = WebSettings(
         jwt_secret="test-secret-0123456789-abcdefghijklmnop",
         cookie_secure=False,
@@ -54,6 +50,9 @@ def make_client(config: AppConfig, **overrides) -> TestClient:
         **overrides,
     )
     app = create_app(config, web_settings=settings)
+    # 限流器挂在 app.state；每个测试客户端从干净的窗口开始
+    app.state.login_limiter.reset()
+    app.state.register_limiter.reset()
     store = app.state.store
     app.state.jobs.runtime_factory = lambda _cfg, _profile, **_kw: FakeRuntime(store)
     return TestClient(app)
