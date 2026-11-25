@@ -17,7 +17,7 @@ export function Sidebar() {
         </div>
       </div>
 
-      <nav className="nav">
+      <nav className="nav" aria-label="主导航">
         {GROUPS.map((group) => {
           const items = NAV_ITEMS.filter(
             (item) =>

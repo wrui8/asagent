@@ -601,6 +601,10 @@ kbd {
   padding: 4px 9px 4px 4px;
   border-radius: 999px;
   border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   transition: 0.2s;
   position: relative;
@@ -1512,6 +1516,13 @@ textarea.input {
   flex-wrap: wrap;
   margin-bottom: 11px;
 }
+.approval-args-toggle {
+  min-height: 44px;
+  margin-top: 8px;
+}
+.codebox.approval-args-expanded {
+  max-height: none;
+}
 .codebox {
   background: rgba(3, 6, 14, 0.72);
   border: 1px solid var(--border);
@@ -2128,6 +2139,7 @@ textarea.kb-editor {
 }
 .cmdk-input input {
   flex: 1;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;
@@ -2150,6 +2162,10 @@ textarea.kb-editor {
   cursor: pointer;
   transition: 0.14s;
   border: 1px solid transparent;
+  width: 100%;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
 }
 .cmd-item:hover,
 .cmd-item.on {
@@ -2417,6 +2433,7 @@ textarea.kb-editor {
 }
 @media (max-width: 960px) {
   .app {
+    --bottom-nav-height: calc(62px + env(safe-area-inset-bottom, 0px));
     flex-direction: column;
   }
   .sidebar {
@@ -2425,7 +2442,7 @@ textarea.kb-editor {
     right: 0;
     bottom: 0;
     top: auto;
-    height: 62px;
+    height: var(--bottom-nav-height);
     width: 100%;
     flex: none;
     flex-direction: row;
@@ -2461,6 +2478,7 @@ textarea.kb-editor {
     margin: 0;
     justify-content: center;
     white-space: nowrap;
+    min-height: 44px;
   }
   .nav-item.active:before {
     left: 18%;
@@ -2481,7 +2499,7 @@ textarea.kb-editor {
     margin: 0;
   }
   .main {
-    padding-bottom: 62px;
+    padding-bottom: var(--bottom-nav-height);
   }
   .topbar {
     padding: 0 14px;
@@ -2489,13 +2507,39 @@ textarea.kb-editor {
   }
   .topbar h1 {
     font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .crumb,
-  .topbar .search {
+  .topbar .command-label,
+  .topbar .command-trigger kbd {
     display: none;
+  }
+  .topbar .command-trigger,
+  .topbar > .icon-btn {
+    display: grid;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    place-items: center;
+  }
+  .user-chip {
+    min-height: 44px;
+    flex-shrink: 0;
   }
   .user-meta {
     display: none;
+  }
+  .user-menu {
+    max-width: calc(100vw - 28px);
+    max-height: calc(100dvh - 77px - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+  }
+  .user-menu-item,
+  .cmd-item {
+    min-height: 44px;
   }
   .page {
     padding: 18px 14px 30px;
@@ -2523,6 +2567,7 @@ textarea.kb-editor {
   }
   .toolbar .filters .input {
     width: 100%;
+    min-width: 0;
   }
   .switch-tabs {
     max-width: 100%;
@@ -2530,7 +2575,8 @@ textarea.kb-editor {
   }
   .page-chat {
     padding: 0;
-    height: calc(100vh - 60px - 62px);
+    height: calc(100vh - 60px - var(--bottom-nav-height));
+    height: calc(100dvh - 60px - var(--bottom-nav-height));
   }
   .chat-layout {
     grid-template-columns: 1fr;
@@ -2552,11 +2598,97 @@ textarea.kb-editor {
     gap: 9px;
     flex-wrap: wrap;
   }
+  .chat-head {
+    padding: 10px 13px;
+  }
+  .chat-head h2 {
+    min-width: 0;
+    flex: 1 1 8ch;
+  }
+  .chat-stats {
+    flex-basis: 100%;
+  }
   .messages {
     padding: 16px 13px 8px;
   }
   .composer {
     padding: 10px 12px 12px;
+  }
+  .composer-bar,
+  .trace-foot,
+  .approval-foot {
+    flex-wrap: wrap;
+  }
+  .composer-hint {
+    flex-basis: 100%;
+  }
+  .table-actions .btn,
+  .modal-foot .btn,
+  .trace-foot .btn,
+  .composer-bar .btn,
+  .approval-foot .btn {
+    min-height: 44px;
+  }
+  .table-wrap {
+    max-width: 100%;
+    overscroll-behavior-x: contain;
+  }
+  .table-wrap > table {
+    min-width: 36rem;
+  }
+  .modal-mask {
+    padding: max(12px, env(safe-area-inset-top, 0px)) 12px max(12px, env(safe-area-inset-bottom, 0px));
+  }
+  .modal {
+    width: min(680px, 100%);
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .modal-head,
+  .modal-foot {
+    flex-shrink: 0;
+  }
+  .modal-head .icon-btn {
+    flex: none;
+    width: 44px;
+    height: 44px;
+  }
+  .modal-body {
+    min-height: 0;
+    overscroll-behavior: contain;
+  }
+  .modal-foot {
+    flex-wrap: wrap;
+  }
+  .cmdk {
+    padding: max(14px, env(safe-area-inset-top, 0px)) 12px max(12px, env(safe-area-inset-bottom, 0px));
+  }
+  .cmdk-box {
+    display: flex;
+    flex-direction: column;
+    width: min(620px, 100%);
+    max-height: 100%;
+  }
+  .cmdk-input {
+    flex: none;
+    padding: 10px 12px;
+  }
+  .cmdk-input input {
+    font-size: 16px;
+  }
+  .cmdk-input .icon-btn {
+    justify-content: center;
+    align-items: center;
+    flex: none;
+    width: 44px;
+    height: 44px;
+  }
+  .cmdk-list {
+    min-height: 0;
+    overscroll-behavior: contain;
+  }
+  .cmdk-foot {
+    display: none;
   }
   .login-wrap {
     grid-template-columns: 1fr;
@@ -2579,8 +2711,28 @@ textarea.kb-editor {
   td {
     padding: 9px 11px;
   }
-  .hide-sm {
-    display: none;
+}
+.chat-sync-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 560px) {
+  .field-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .field-grid > *,
+  .field {
+    min-width: 0;
+  }
+  .field .input,
+  .toolbar .filters .input,
+  .toolbar .search input,
+  .composer textarea {
+    font-size: 16px;
   }
 }
 .mobile-only {

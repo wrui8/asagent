@@ -83,14 +83,19 @@ def auth(token: str) -> dict[str, str]:
 
 
 def wait_status(
-    client: TestClient, token: str, session_id: str, *, timeout: float = 5.0
+    client: TestClient,
+    token: str,
+    session_id: str,
+    *,
+    expected: str | None = None,
+    timeout: float = 5.0,
 ) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         resp = client.get(f"/api/sessions/{session_id}", headers=auth(token))
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        if body["status"] != "running":
+        if body["status"] != "running" and (expected is None or body["status"] == expected):
             return body
         time.sleep(0.05)
     raise AssertionError(f"会话未在 {timeout}s 内结束: {session_id}")

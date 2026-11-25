@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from api_helpers import PASSWORD, auth, create_admin, create_user, login, wait_status
 from fastapi.testclient import TestClient
 
-from asagent.models.types import ToolCall
+from asagent.models.mock import ScriptedClient
+from asagent.models.types import ModelResponse, ModelSpec, ToolCall
+from asagent.runtime import factory
 from asagent.runtime.state import SessionStatus
 
 
@@ -163,6 +166,48 @@ def test_approval_flow(api_client: TestClient) -> None:
     assert decided.status_code == 200, decided.text
     assert decided.json() == []
     assert store.approval_status(session_id, call.id) == "denied"
+
+
+@pytest.mark.parametrize("approved", [True, False], ids=["approve", "deny"])
+def test_office_decision_resumes_real_file_operation(api_client, config, monkeypatch, approved):
+    args = {"path": "decision.md", "content": "iOS approval check"}
+    call = ToolCall(id="write-1", name="write_document", arguments=args)
+    model = ScriptedClient(
+        ModelSpec(id="offline", provider="mock", upstream_name="offline"),
+        [ModelResponse(tool_calls=[call], finish_reason="tool_calls"), ModelResponse(text="完成")],
+    )
+    monkeypatch.setattr(factory, "build_client", lambda cfg, model_id: model)
+    api_client.app.state.jobs.runtime_factory = factory.build_runtime
+    user = create_user(api_client, "mobileoffice")
+    token = login(api_client, user["username"])
+    headers = {**auth(token), "X-Client": "mobile"}
+    opened = api_client.post(
+        "/api/sessions", headers=headers, json={"profile": "office", "input": "写入测试文件"}
+    )
+    assert opened.status_code == 202, opened.text
+    session_id = opened.json()["session_id"]
+    url = f"/api/sessions/{session_id}"
+    output = config.workspace_dir / user["id"] / session_id / args["path"]
+
+    wait_status(api_client, token, session_id, expected="awaiting_approval")
+    (pending,) = api_client.get(f"{url}/approvals", headers=headers).json()
+    assert (pending["tool"], pending["call_id"], pending["args"]) == (call.name, call.id, args)
+    assert not output.exists()
+
+    decision = {"call_id": pending["call_id"], "approved": approved, "resume": True}
+    decided = api_client.post(f"{url}/approvals", headers=headers, json=decision)
+    assert decided.status_code == 200, decided.text
+    wait_status(api_client, token, session_id, expected="done")
+    assert api_client.get(f"{url}/approvals", headers=headers).json() == []
+    repeated = api_client.post(f"{url}/approvals", headers=headers, json=decision)
+    assert repeated.status_code == 409
+    events = api_client.get(f"{url}/events", headers=headers).json()
+    decisions = [e["payload"] for e in events if e["type"] == "approval_decided"]
+    assert [(d["call_id"], d["approved"]) for d in decisions] == [(call.id, approved)]
+    if approved:
+        assert output.read_text(encoding="utf-8") == args["content"]
+    else:
+        assert not output.exists()
 
 
 def test_cancel_without_job_conflicts(api_client: TestClient) -> None:

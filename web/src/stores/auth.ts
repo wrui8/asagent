@@ -9,8 +9,12 @@ import {
   register as apiRegister,
 } from "../lib/api";
 import type { User } from "../lib/types";
+import { callMobile, initializeMobileHistory, IS_MOBILE_HOST, type MobileSession } from "../lib/mobile-host";
 
-type Status = "loading" | "guest" | "authed";
+type Status = "loading" | "guest" | "authed" | "retry";
+
+let initializedMobileRoute = false;
+let mobileAuthVersion = 0;
 
 interface AuthState {
   user: User | null;
@@ -43,6 +47,24 @@ export const useAuth = create<AuthState>((set) => ({
   },
 
   async bootstrap() {
+    if (IS_MOBILE_HOST) {
+      const version = ++mobileAuthVersion;
+      set({ status: "loading" });
+      try {
+        if (!initializedMobileRoute) {
+          const path = await callMobile<string>("ready");
+          initializeMobileHistory(path);
+          initializedMobileRoute = true;
+        }
+        const session = await callMobile<MobileSession>("bootstrap");
+        if (version === mobileAuthVersion) {
+          set({ status: session.status === "anon" ? "guest" : session.status, user: session.user });
+        }
+      } catch {
+        if (version === mobileAuthVersion) set({ status: "retry", user: null });
+      }
+      return;
+    }
     try {
       if (!getAccessToken()) {
         const refreshed = await refreshToken();
@@ -75,6 +97,7 @@ export const useAuth = create<AuthState>((set) => ({
 }));
 
 window.addEventListener("asagent:logout", () => {
+  mobileAuthVersion++;
   useAuth.setState({ user: null, status: "guest" });
 });
 

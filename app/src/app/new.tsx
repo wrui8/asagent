@@ -1,5 +1,5 @@
 import { Redirect, useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -26,7 +26,7 @@ const PRESETS: Record<string, { placeholder: string; hint: string }> = {
   },
   rag: {
     placeholder: "例如：总结知识库里关于权限模型的说明",
-    hint: "基于本地知识库检索，引用原文作答。",
+    hint: "从服务端知识库检索相关文档，引用原文作答。",
   },
   code: {
     placeholder: "例如：写一个 Python 函数把 CSV 转成 JSON",
@@ -64,6 +64,7 @@ function NewSessionForm() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const submitting = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -92,11 +93,13 @@ function NewSessionForm() {
   const preset = PRESETS[profile] ?? FALLBACK;
 
   const create = useCallback(async () => {
+    if (submitting.current || !selected) return;
     const text = input.trim();
     if (!text) {
       setError("请先描述任务");
       return;
     }
+    submitting.current = true;
     setBusy(true);
     setError("");
     try {
@@ -111,6 +114,7 @@ function NewSessionForm() {
         params: { id: data.session_id },
       });
     } catch (err) {
+      submitting.current = false;
       setError(errorText(err, "创建会话失败"));
       setBusy(false);
     }
@@ -127,7 +131,7 @@ function NewSessionForm() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.topBar}>
-            <Pressable onPress={() => router.back()} style={styles.back}>
+            <Pressable accessibilityRole="button" onPress={() => router.dismissTo("/")} style={styles.back}>
               <Text style={styles.backText}>‹ 返回</Text>
             </Pressable>
             <Text style={styles.topTitle}>新建任务</Text>
@@ -144,6 +148,8 @@ function NewSessionForm() {
                 return (
                   <Pressable
                     key={item.name}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active }}
                     style={[styles.profile, active && styles.profileActive]}
                     onPress={() => setProfile(item.name)}
                   >
@@ -168,6 +174,7 @@ function NewSessionForm() {
           <Text style={styles.eyebrow}>STEP 2 · 描述任务</Text>
           <Text style={styles.hint}>{preset.hint}</Text>
           <TextInput
+            accessibilityLabel="任务描述"
             style={styles.input}
             value={input}
             onChangeText={setInput}
@@ -180,12 +187,13 @@ function NewSessionForm() {
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
           <Pressable
+            accessibilityRole="button"
             style={({ pressed }) => [
               styles.primary,
-              (pressed || busy) && styles.primaryPressed,
+              (pressed || busy || !selected) && styles.primaryPressed,
             ]}
             onPress={() => void create()}
-            disabled={busy}
+            disabled={busy || !selected}
           >
             {busy ? (
               <ActivityIndicator color="#fff" />
@@ -262,7 +270,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     alignItems: "center",
     justifyContent: "center",
-    height: 50,
+    minHeight: 50,
+    paddingVertical: 10,
     marginTop: 22,
   },
   primaryPressed: { opacity: 0.75 },

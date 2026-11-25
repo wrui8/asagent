@@ -25,6 +25,8 @@ import {
 import { errorMessage } from "../lib/errors";
 import { mergeEvents } from "../lib/events";
 import { copyText, fmtInt, fmtMoney, profileLabel, shortId } from "../lib/format";
+import { useMobileChat } from "../lib/mobile-chat";
+import { callMobile, IS_MOBILE_HOST } from "../lib/mobile-host";
 import { rememberSession } from "../lib/nav";
 import { openSessionStream } from "../lib/sse";
 import type { AgentEvent } from "../lib/types";
@@ -39,9 +41,14 @@ import { Timeline } from "../components/Timeline";
 
 export function Chat() {
   const { id = "" } = useParams();
+  return <ChatSession key={id} id={id} />;
+}
+
+function ChatSession({ id }: { id: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useUI((s) => s.toast);
+  const mobileSync = useMobileChat(id);
 
   const [draft, setDraft] = useState("");
   const [traceView, setTraceView] = useState<"tl" | "json">("tl");
@@ -53,7 +60,7 @@ export function Chat() {
   const sessionQuery = useQuery({
     queryKey: ["session", id],
     queryFn: () => fetchSession(id),
-    enabled: Boolean(id),
+    enabled: Boolean(id) && !IS_MOBILE_HOST,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       if (status === "running") return 2500;
@@ -68,21 +75,21 @@ export function Chat() {
   const messagesQuery = useQuery({
     queryKey: ["messages", id],
     queryFn: () => fetchMessages(id),
-    enabled: Boolean(id),
+    enabled: Boolean(id) && !IS_MOBILE_HOST,
     refetchInterval: status === "running" || status === "awaiting_approval" ? 3000 : false,
   });
 
   const eventsQuery = useQuery({
     queryKey: ["events", id],
     queryFn: () => fetchEvents(id, 0),
-    enabled: Boolean(id),
+    enabled: Boolean(id) && !IS_MOBILE_HOST,
     staleTime: Infinity,
   });
 
   const approvalsQuery = useQuery({
     queryKey: ["approvals", id],
     queryFn: () => fetchApprovals(id),
-    enabled: Boolean(id),
+    enabled: Boolean(id) && !IS_MOBILE_HOST,
     refetchInterval: status === "awaiting_approval" ? 3000 : false,
   });
 
@@ -96,7 +103,7 @@ export function Chat() {
 
   // SSE：仅会话处于运行中时接入；其余状态由轮询兜底
   useEffect(() => {
-    if (!id || !eventsQuery.isSuccess || status !== "running") return;
+    if (IS_MOBILE_HOST || !id || !eventsQuery.isSuccess || status !== "running") return;
     const current =
       queryClient.getQueryData<AgentEvent[]>(["events", id]) ?? [];
     const after = current.length ? current[current.length - 1].seq : 0;
@@ -132,6 +139,7 @@ export function Chat() {
       void queryClient.invalidateQueries({ queryKey: ["session", id] });
     },
     onError: (error) => toast(errorMessage(error), "err"),
+    onSettled: mobileSync.finishMutation,
   });
 
   const resume = useMutation({
@@ -141,6 +149,7 @@ export function Chat() {
       void queryClient.invalidateQueries({ queryKey: ["session", id] });
     },
     onError: (error) => toast(errorMessage(error), "err"),
+    onSettled: mobileSync.finishMutation,
   });
 
   const decide = useMutation({
@@ -156,7 +165,11 @@ export function Chat() {
       void queryClient.invalidateQueries({ queryKey: ["events", id] });
       void queryClient.invalidateQueries({ queryKey: ["messages", id] });
     },
-    onError: (error) => toast(errorMessage(error), "err"),
+    onError: (error, vars) => {
+      if (IS_MOBILE_HOST) mobileSync.verifyDecision(vars);
+      else toast(errorMessage(error), "err");
+    },
+    onSettled: mobileSync.finishMutation,
   });
 
   const visibleMessages = useMemo(() => {
@@ -226,20 +239,27 @@ export function Chat() {
     });
   };
 
-  const copyTrace = () => {
-    void copyText(JSON.stringify(events, null, 2)).then(() =>
-      toast("轨迹 JSON 已复制", "ok"),
-    );
+  const copy = (text: string, message: string) => {
+    void copyText(text)
+      .then(() => toast(message, "ok"))
+      .catch((error) => toast(errorMessage(error, "复制失败"), "err"));
   };
 
   const exportTrace = () => {
-    const blob = new Blob([JSON.stringify(events, null, 2)], {
+    const filename = `${id}-trace.json`;
+    const json = JSON.stringify(events, null, 2);
+    if (IS_MOBILE_HOST) {
+      void callMobile<void>("exportTrace", filename, json)
+        .catch((error) => toast(errorMessage(error, "导出失败"), "err"));
+      return;
+    }
+    const blob = new Blob([json], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${id}-trace.json`;
+    link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -260,6 +280,9 @@ export function Chat() {
   const running = status === "running";
   const awaiting = status === "awaiting_approval";
   const terminal = status === "done" || status === "failed";
+  const mobileBusy = IS_MOBILE_HOST && (
+    cancel.isPending || resume.isPending || decide.isPending || mobileSync.checkingCallId !== null
+  );
 
   return (
     <section className="page page-chat">
@@ -270,6 +293,7 @@ export function Chat() {
               className="icon-btn mobile-only"
               onClick={() => navigate("/")}
               title="返回列表"
+              aria-label="返回列表"
             >
               <ArrowLeft size={15} />
             </button>
@@ -299,7 +323,13 @@ export function Chat() {
           </div>
 
           <div className="messages" ref={messagesRef}>
-            {messagesQuery.isLoading ? (
+            {mobileSync.syncError ? (
+              <div className="form-error chat-sync-error" role="status">
+                <span>{mobileSync.syncError}</span>
+                <button className="btn btn-sm" onClick={mobileSync.retry}>重试同步</button>
+              </div>
+            ) : null}
+            {messagesQuery.isLoading || (IS_MOBILE_HOST && !session && !mobileSync.syncError) ? (
               <div className="msg" style={{ display: "grid", gap: 12 }}>
                 <div className="skeleton" style={{ width: "60%" }} />
                 <div className="skeleton" style={{ width: "85%" }} />
@@ -326,11 +356,7 @@ export function Chat() {
                   </div>
                   <div className="msg-foot">
                     <button
-                      onClick={() =>
-                        void copyText(message.content ?? "").then(() =>
-                          toast("已复制", "ok"),
-                        )
-                      }
+                      onClick={() => copy(message.content ?? "", "已复制")}
                     >
                       复制
                     </button>
@@ -356,13 +382,14 @@ export function Chat() {
                 key={approval.call_id}
                 approval={approval}
                 pendingCount={pending.length}
+                checking={mobileSync.checkingCallId === approval.call_id}
+                expandParams={IS_MOBILE_HOST}
                 busy={
-                  decide.isPending &&
-                  decide.variables?.callId === approval.call_id
+                  mobileBusy || (decide.isPending && decide.variables?.callId === approval.call_id)
                 }
-                onDecide={(approved) =>
-                  decide.mutate({ callId: approval.call_id, approved })
-                }
+                onDecide={(approved) => {
+                  if (mobileSync.beginMutation()) decide.mutate({ callId: approval.call_id, approved });
+                }}
               />
             ))}
 
@@ -386,7 +413,7 @@ export function Chat() {
               </div>
             ) : null}
 
-            {!visibleMessages.length && !running && !awaiting && !session?.error ? (
+            {session && !visibleMessages.length && !running && !awaiting && !session.error && !showFinalCard ? (
               <Empty title="暂无消息">任务刚刚创建，等待 Agent 开始规划。</Empty>
             ) : null}
           </div>
@@ -407,7 +434,7 @@ export function Chat() {
                 onChange={(event) => setDraft(event.target.value)}
                 disabled={running || awaiting}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && !running && !awaiting) {
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !running && !awaiting) {
                     event.preventDefault();
                     sendOrContinue();
                   }
@@ -424,8 +451,8 @@ export function Chat() {
                 {running ? (
                   <button
                     className="btn btn-sm btn-danger-ghost"
-                    disabled={cancel.isPending}
-                    onClick={() => cancel.mutate()}
+                    disabled={cancel.isPending || mobileBusy}
+                    onClick={() => { if (mobileSync.beginMutation()) cancel.mutate(); }}
                   >
                     <Square size={13} />
                     {cancel.isPending ? "停止中…" : "停止任务"}
@@ -439,8 +466,8 @@ export function Chat() {
                     {status === "failed" ? (
                       <button
                         className="btn btn-sm"
-                        disabled={resume.isPending}
-                        onClick={() => resume.mutate()}
+                        disabled={resume.isPending || mobileBusy}
+                        onClick={() => { if (mobileSync.beginMutation()) resume.mutate(); }}
                       >
                         <Play size={13} />
                         恢复执行
@@ -521,7 +548,7 @@ export function Chat() {
             ) : null}
           </div>
           <div className="trace-foot">
-            <button className="btn btn-sm" onClick={copyTrace}>
+            <button className="btn btn-sm" onClick={() => copy(JSON.stringify(events, null, 2), "轨迹 JSON 已复制")}>
               <Copy size={13} />
               复制 JSON
             </button>
@@ -548,11 +575,7 @@ export function Chat() {
             <>
               <button
                 className="btn"
-                onClick={() =>
-                  void copyText(artifact.content).then(() =>
-                    toast("产物内容已复制", "ok"),
-                  )
-                }
+                onClick={() => copy(artifact.content, "产物内容已复制")}
               >
                 复制内容
               </button>

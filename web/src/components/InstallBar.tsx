@@ -1,6 +1,7 @@
 import { Download, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
+import { IS_MOBILE_HOST } from "../lib/mobile-host";
 
 interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -18,6 +19,7 @@ export function InstallBar() {
   const [bottom, setBottom] = useState(18);
 
   useEffect(() => {
+    if (IS_MOBILE_HOST) return;
     const standalone =
       window.matchMedia?.("(display-mode: standalone)").matches ?? false;
     if (standalone || localStorage.getItem(DISMISS_KEY) === "1") return;
@@ -45,7 +47,7 @@ export function InstallBar() {
     return () => observer.disconnect();
   }, [visible, pathname]);
 
-  if (!visible || !event) return null;
+  if (IS_MOBILE_HOST || !visible || !event) return null;
 
   const install = async () => {
     await event.prompt();
