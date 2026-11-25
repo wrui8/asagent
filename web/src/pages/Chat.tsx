@@ -14,6 +14,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   cancelSession,
+  continueSession,
   decideApproval,
   fetchApprovals,
   fetchArtifact,
@@ -143,6 +144,21 @@ export function Chat() {
     onError: (error) => toast(errorMessage(error), "err"),
   });
 
+  // 续聊：同一会话追加一轮，不新建会话
+  const continueChat = useMutation({
+    mutationFn: (text: string) => continueSession(id, { input: text }),
+    onSuccess: () => {
+      setDraft("");
+      toast("已发送，正在继续执行", "ok");
+      void queryClient.invalidateQueries({ queryKey: ["session", id] });
+      void queryClient.invalidateQueries({ queryKey: ["messages", id] });
+      void queryClient.invalidateQueries({ queryKey: ["events", id] });
+      void queryClient.invalidateQueries({ queryKey: ["approvals", id] });
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+    onError: (error) => toast(errorMessage(error), "err"),
+  });
+
   const decide = useMutation({
     mutationFn: (vars: { callId: string; approved: boolean }) =>
       decideApproval(id, vars.callId, vars.approved, true),
@@ -213,17 +229,37 @@ export function Chat() {
     }
   };
 
+  // 本轮指标：FINAL 事件的 round_* 字段；旧会话没有该字段时不展示
+  const roundStat = useMemo(() => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.type !== "final") continue;
+      const steps = event.payload?.round_steps;
+      const cost = event.payload?.round_cost;
+      if (typeof steps !== "number" && typeof cost !== "number") return null;
+      return {
+        steps: typeof steps === "number" ? steps : null,
+        cost: typeof cost === "number" ? cost : null,
+      };
+    }
+    return null;
+  }, [events]);
+
   const sendOrContinue = () => {
-    if (!session || session.status === "running" || session.status === "awaiting_approval") {
+    if (
+      !session ||
+      session.status === "running" ||
+      session.status === "awaiting_approval" ||
+      continueChat.isPending
+    ) {
       return;
     }
-    if (!draft.trim()) {
+    const text = draft.trim();
+    if (!text) {
       toast("先输入要继续追问的内容", "warn");
       return;
     }
-    navigate("/new", {
-      state: { input: draft.trim(), profile: session.profile },
-    });
+    continueChat.mutate(text);
   };
 
   const copyTrace = () => {
@@ -277,11 +313,11 @@ export function Chat() {
             <h2>{session?.title || session?.final_answer || "会话详情"}</h2>
             {status ? <StatusBadge status={status} /> : null}
             <div className="chat-stats">
-              <span className="cost">
-                成本 <b>{fmtMoney(session?.cost)}</b>
+              <span className="cost" title="会话累计">
+                累计成本 <b>{fmtMoney(session?.cost)}</b>
               </span>
-              <span>
-                步数 <b>{fmtInt(session?.step)}</b>
+              <span title="会话累计">
+                累计步数 <b>{fmtInt(session?.step)}</b>
               </span>
               <span className="hide-sm">
                 tokens <b>{tokenTotal >= 1000 ? `${(tokenTotal / 1000).toFixed(1)}k` : fmtInt(tokenTotal)}</b>
@@ -347,6 +383,17 @@ export function Chat() {
                 </div>
                 <div className="body">
                   <Markdown content={finalAnswer} />
+                  {roundStat ? (
+                    <div className="round-stat">
+                      <span>本轮</span>
+                      {roundStat.cost !== null ? (
+                        <b>{fmtMoney(roundStat.cost)}</b>
+                      ) : null}
+                      {roundStat.steps !== null ? (
+                        <b>{fmtInt(roundStat.steps)} 步</b>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -398,16 +445,22 @@ export function Chat() {
                   terminal
                     ? draft
                       ? ""
-                      : "输入追问内容，发送后将创建新会话继续"
+                      : "继续追问当前会话…"
                     : running
-                      ? "任务运行中，可先停止任务再发起新会话"
+                      ? "任务运行中，可先停止任务再发起新追问"
                       : "等待审批结果后自动继续…"
                 }
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 disabled={running || awaiting}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && !running && !awaiting) {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !running &&
+                    !awaiting &&
+                    !continueChat.isPending
+                  ) {
                     event.preventDefault();
                     sendOrContinue();
                   }
@@ -419,7 +472,9 @@ export function Chat() {
                     ? "存在待审批工具调用，处理后将自动 resume"
                     : running
                       ? "Enter 禁用 · 任务运行中"
-                      : "Enter 创建后续会话 · Shift+Enter 换行"}
+                      : continueChat.isPending
+                        ? "发送中…"
+                        : "Enter 发送 · Shift+Enter 换行"}
                 </span>
                 {running ? (
                   <button
@@ -448,11 +503,11 @@ export function Chat() {
                     ) : null}
                     <button
                       className="btn btn-sm btn-primary"
-                      disabled={!draft.trim()}
+                      disabled={!draft.trim() || continueChat.isPending}
                       onClick={sendOrContinue}
                     >
                       <Send size={13} />
-                      新建会话继续
+                      {continueChat.isPending ? "发送中…" : "发送"}
                     </button>
                   </>
                 )}

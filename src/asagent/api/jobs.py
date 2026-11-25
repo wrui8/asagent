@@ -95,7 +95,31 @@ class JobManager:
             max_steps=max_steps,
             max_cost_cny=max_cost_cny,
             resume=False,
+            continuation=False,
             state=state,
+        )
+
+    def submit_continue(
+        self,
+        *,
+        session_id: str,
+        owner_id: str,
+        profile: str,
+        user_input: str,
+        max_steps: int,
+        max_cost_cny: float | None,
+    ) -> None:
+        """在已有会话语义上追加一轮对话（不新建会话）。"""
+        self._spawn(
+            session_id=session_id,
+            owner_id=owner_id,
+            profile=profile,
+            user_input=user_input,
+            max_steps=max_steps,
+            max_cost_cny=max_cost_cny,
+            resume=False,
+            continuation=True,
+            state=None,
         )
 
     def submit_resume(
@@ -115,6 +139,7 @@ class JobManager:
             max_steps=max_steps,
             max_cost_cny=max_cost_cny,
             resume=True,
+            continuation=False,
             state=None,
         )
 
@@ -128,6 +153,7 @@ class JobManager:
         max_steps: int,
         max_cost_cny: float | None,
         resume: bool,
+        continuation: bool,
         state: SessionState | None,
     ) -> None:
         if self.is_running(session_id):
@@ -150,6 +176,7 @@ class JobManager:
                 max_steps=max_steps,
                 max_cost_cny=max_cost_cny,
                 resume=resume,
+                continuation=continuation,
                 state=state,
             ),
             name=f"agent:{session_id}",
@@ -180,8 +207,11 @@ class JobManager:
         max_steps: int,
         max_cost_cny: float | None,
         resume: bool,
+        continuation: bool,
         state: SessionState | None,
     ) -> None:
+        # 本轮记账基线：续聊/恢复只累加本轮增量，避免把历史成本重复计入日配额
+        baseline_cost = self._current_cost(session_id)
         heartbeat = asyncio.create_task(
             self._heartbeat(session_id), name=f"heartbeat:{session_id}"
         )
@@ -200,6 +230,7 @@ class JobManager:
                         user_input,
                         session_id=session_id,
                         resume=resume,
+                        continuation=continuation,
                         max_steps=max_steps,
                         owner_id=owner_id,
                         state=state,
@@ -220,7 +251,7 @@ class JobManager:
             self._tasks.pop(session_id, None)
             self._owners.pop(session_id, None)
             self._release(session_id, owner_id)
-            self._record_cost(session_id, owner_id)
+            self._record_cost(session_id, owner_id, baseline_cost)
 
     async def _heartbeat(self, session_id: str) -> None:
         token = self._tokens.get(session_id)
@@ -274,13 +305,22 @@ class JobManager:
         self.store.save_state(state)
         self.store.append(session_id, "error", {"message": message})
 
-    def _record_cost(self, session_id: str, owner_id: str) -> None:
+    def _current_cost(self, session_id: str) -> float:
+        try:
+            return self.store.load_state(session_id).cost
+        except KeyError:
+            return 0.0
+
+    def _record_cost(self, session_id: str, owner_id: str, baseline: float) -> None:
         try:
             state = self.store.load_state(session_id)
         except KeyError:
             return
+        delta = max(0.0, state.cost - baseline)
+        if delta <= 0:
+            return
         try:
-            self.web.add_cost(owner_id, state.cost)
+            self.web.add_cost(owner_id, delta)
         except Exception:  # noqa: BLE001 - 计费失败不应影响任务结果
             logger.exception("record cost failed: %s", session_id)
 

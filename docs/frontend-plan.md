@@ -301,6 +301,7 @@ GET    /api/system/mcp?profile=      admin（只读配置，不启动子进程�
 # 会话
 GET    /api/sessions
 POST   /api/sessions                 202 + session_id
+POST   /api/sessions/{id}/continue   202，同一会话追加一轮（本轮步数/预算）
 GET    /api/sessions/{id}
 GET    /api/sessions/{id}/messages
 GET    /api/sessions/{id}/events?after_seq=
@@ -380,7 +381,11 @@ GET /api/sessions/{id}/events?after_seq=123
 ### 5.5 任务与审批
 
 - `POST /api/sessions`：校验配额 → 创建任务 → 后台 `asyncio.create_task` 跑 `runtime.run(owner_id=...)` → 返回 202。
-- 同一 session 已有运行中任务：返回 409。
+- `POST /api/sessions/{id}/continue`：同一会话追加一轮。仅 `done`/`failed` 且无运行中任务时允许；
+  内核把上一轮最终回答固化为 assistant 消息，步数与成本继续累计，但 `max_steps`/预算按
+  「当前累计 + 本轮额度」换算；`FINAL` 事件带 `round_steps`/`round_cost` 供前端按轮展示。
+  日配额按本轮增量记账（`JobManager` 用运行前后 cost 差值），不会重复计费。
+- 同一 session 已有运行中任务：返回 409（状态刚落 `done`、后台仍在收尾时同样如此）。
 - `POST /api/sessions/{id}/cancel`：`task.cancel()` → 显式写 `FAILED` + `error="用户取消"` + `error` 事件（`CancelledError` 不会被 `except Exception` 捕获，必须由 API 层兜底落盘）。
 - `POST /api/sessions/{id}/approvals`：等价于 CLI 的 `approve`：`decide_approval` + `approval_decided` 事件；可选 `resume=true` 立即继续。
 - 审批列表来自 `tool_invocations(status='started')` 且 `permission > READ`。
@@ -396,7 +401,7 @@ GET /api/sessions/{id}/events?after_seq=123
 | P0 | 登录 / 注册 | 邀请码注册、记住我（refresh cookie） |
 | P0 | 会话列表 | 状态/场景/成本/时间；筛选、分页 |
 | P0 | 新会话 | profile、模型、max_steps、max_cost、workspace 白名单选择 |
-| P0 | 对话页 | 消息流 + 事件时间线 + 审批卡片 + 停止 + 成本 |
+| P0 | 对话页 | 消息流 + 事件时间线 + 审批卡片 + 停止 + 成本；结束后原地追问（不新建会话），最终回答下展示本轮步数/成本 |
 | P0 | 会话详情 | trace、artifact、审批历史、消息原文 |
 | P0 | 知识库 | 文档列表、上传/编辑、删除（回收站）、版本历史、索引状态条、重建索引（异步进度）、可疑内容徽章 |
 | P1 | 评测 ✅ | admin 触发（场景/模型/重复/用例上限）、进度、历史报告、失败分类、成本；每日次数与单飞 |

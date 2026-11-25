@@ -272,6 +272,20 @@ export function createSession(
   return request("/api/sessions", { method: "POST", body });
 }
 
+export interface ContinueSessionBody {
+  input: string;
+  max_steps?: number;
+  max_cost_cny?: number | null;
+}
+
+/** 在同一会话上追加一轮追问，步数与预算按本轮计算。 */
+export function continueSession(
+  id: string,
+  body: ContinueSessionBody,
+): Promise<{ session_id: string; status: string }> {
+  return request(`/api/sessions/${id}/continue`, { method: "POST", body });
+}
+
 export function cancelSession(id: string): Promise<unknown> {
   return request(`/api/sessions/${id}/cancel`, { method: "POST" });
 }
