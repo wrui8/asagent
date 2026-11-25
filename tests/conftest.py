@@ -17,6 +17,9 @@ def project_root() -> Path:
 @pytest.fixture()
 def config(tmp_path: Path, project_root: Path) -> AppConfig:
     cfg = load_config(project_root)
+    # 本地根 .env 可能已切到 PostgreSQL；单元测试一律用临时 SQLite，避免依赖中间件。
+    cfg.settings.as_storage_backend = "sqlite"
+    cfg.settings.as_pg_dsn = ""
     cfg.settings.as_db_path = str(tmp_path / "state.db")
     cfg.settings.as_trace_dir = str(tmp_path / "traces")
     cfg.settings.as_artifacts_dir = str(tmp_path / "artifacts")

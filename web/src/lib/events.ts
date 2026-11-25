@@ -169,12 +169,22 @@ export function describeEvent(event: AgentEvent): TimelineMeta {
       };
     case "checkpoint":
       return { ...base, detail: `step ${text(p.step)} · 已保存` };
-    case "final":
+    case "final": {
+      const roundSteps = typeof p.round_steps === "number" ? p.round_steps : null;
+      const roundCost = typeof p.round_cost === "number" ? p.round_cost : null;
+      const round = [
+        roundSteps !== null ? `本轮 ${roundSteps} 步` : "",
+        roundCost !== null ? `本轮 ¥${roundCost.toFixed(4)}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const total = p.cost !== undefined ? `累计 ¥${Number(p.cost).toFixed(4)}` : "";
       return {
         ...base,
         cls: "final",
-        detail: p.cost !== undefined ? `会话完成 · 累计 ¥${Number(p.cost).toFixed(4)}` : "会话完成",
+        detail: ["会话完成", round, total].filter(Boolean).join(" · "),
       };
+    }
     case "error":
       return { ...base, cls: "warn", detail: text(p.message) || "执行出错" };
     default:

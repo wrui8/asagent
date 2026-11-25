@@ -105,6 +105,10 @@ class AgentRuntime:
         # 未启用时为 None，构建上下文的行为与 v1 完全一致。
         self.memory = memory
         self._clients: dict[str, ModelClient] = {}
+        # 每轮对话的指标基线：新建/续聊/恢复都在 run 开头重置，
+        # 结束时用差值在 FINAL 事件里给出「本轮」步数与成本。
+        self._round_start_step = 0
+        self._round_start_cost = 0.0
 
     async def aclose(self) -> None:
         if self.mcp_manager is not None:
@@ -132,6 +136,7 @@ class AgentRuntime:
         *,
         session_id: str | None = None,
         resume: bool = False,
+        continuation: bool = False,
         max_steps: int = 12,
         owner_id: str | None = None,
         state: SessionState | None = None,
@@ -148,13 +153,22 @@ class AgentRuntime:
         else:
             if not user_input:
                 raise ValueError("新任务需要 user_input")
-            if state is None:
-                state = self.store.create_session(
-                    self.profile.name, user_input[:50], owner_id=owner_id
+            if continuation:
+                if state is None:
+                    if not session_id:
+                        raise ValueError("continuation 需要 session_id")
+                    state = self.store.load_state(session_id)
+                self._prepare_continuation(state)
+            else:
+                if state is None:
+                    state = self.store.create_session(
+                        self.profile.name, user_input[:50], owner_id=owner_id
+                    )
+                self._event(
+                    state, EventType.SESSION_CREATED, {"profile": self.profile.name}
                 )
             if not state.workspace:
                 state.workspace = str(self._resolved_workspace(state))
-            self._event(state, EventType.SESSION_CREATED, {"profile": self.profile.name})
             input_verdict = await self.guard.check(
                 GuardStage.INPUT, {"text": user_input}
             )
@@ -175,9 +189,13 @@ class AgentRuntime:
                     {"stage": "input", **input_verdict.model_dump()},
                 )
             state.messages.append(Message(role="user", content=user_input))
-            self._event(state, EventType.USER_INPUT, {"text": user_input})
+            payload: dict = {"text": user_input}
+            if continuation:
+                payload["continuation"] = True
+            self._event(state, EventType.USER_INPUT, payload)
             self.store.save_state(state)
 
+        self._mark_round_start(state)
         await self._prepare_mcp()
         allowed_tools = list(dict.fromkeys([*self.profile.tool_names, *self._mcp_tool_names]))
         specs = self.registry.specs(allowed_tools)
@@ -455,7 +473,11 @@ class AgentRuntime:
                         self._event(
                             state,
                             EventType.FINAL,
-                            {"text": state.final_answer, "fallback": verdict.reason},
+                            {
+                                "text": state.final_answer,
+                                "fallback": verdict.reason,
+                                **self._round_metrics(state),
+                            },
                         )
                         break
                     state.messages.append(
@@ -511,7 +533,11 @@ class AgentRuntime:
 
                 state.final_answer = final
                 state.status = SessionStatus.DONE
-                self._event(state, EventType.FINAL, {"text": final})
+                self._event(
+                    state,
+                    EventType.FINAL,
+                    {"text": final, **self._round_metrics(state)},
+                )
                 break
             else:
                 state.status = SessionStatus.FAILED
@@ -887,6 +913,32 @@ class AgentRuntime:
             if message.role == "user" and message.content:
                 return message.content
         return ""
+
+    def _prepare_continuation(self, state: SessionState) -> None:
+        """续聊：把上一轮最终回答固化为 assistant 消息，并重置为可运行状态。"""
+        final = (state.final_answer or "").strip()
+        last = state.messages[-1] if state.messages else None
+        already = (
+            last is not None
+            and last.role == "assistant"
+            and (last.content or "").strip() == final
+        )
+        if final and not already:
+            state.messages.append(Message(role="assistant", content=final))
+        state.status = SessionStatus.RUNNING
+        state.error = None
+        state.final_answer = None
+
+    def _mark_round_start(self, state: SessionState) -> None:
+        self._round_start_step = state.step
+        self._round_start_cost = state.cost
+
+    def _round_metrics(self, state: SessionState) -> dict[str, float | int]:
+        """本轮增量（用于 FINAL 事件，前端按轮展示）。"""
+        return {
+            "round_steps": max(0, state.step - self._round_start_step),
+            "round_cost": round(max(0.0, state.cost - self._round_start_cost), 6),
+        }
 
     @staticmethod
     def _result(state: SessionState) -> RunResult:

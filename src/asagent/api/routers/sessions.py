@@ -25,6 +25,7 @@ from ..jobs import JobManager
 from ..schemas import (
     MessageOut,
     SessionAccepted,
+    SessionContinueRequest,
     SessionCreateRequest,
     SessionOut,
 )
@@ -150,6 +151,60 @@ async def create_session(
     except RuntimeError:
         raise api_error(409, "会话已在运行", "already_running") from None
     return SessionAccepted(session_id=state.session_id)
+
+
+@router.post("/{session_id}/continue", response_model=SessionAccepted, status_code=202)
+async def continue_session(
+    session_id: str,
+    payload: SessionContinueRequest,
+    user: dict = Depends(current_user),
+    web: WebStore = Depends(get_web),
+    store: KernelStore = Depends(get_store),
+    jobs: JobManager = Depends(get_jobs),
+    settings: WebSettings = Depends(get_settings),
+) -> SessionAccepted:
+    """在同一个会话上追加一轮对话（不新建会话）。
+
+    步数与成本按「本轮」计算：传给内核的累计上限 = 当前累计 + 本轮额度；
+    日配额仍是全局兜底，`JobManager` 只按本轮增量记账。
+    """
+    state = load_owned_session(session_id, store, user)
+    if jobs.is_running(session_id):
+        raise api_error(409, "会话正在运行", "already_running")
+    if state.status == SessionStatus.AWAITING_APPROVAL:
+        raise api_error(409, "仍有未决审批，请先处理", "approval_pending")
+    if state.status not in (SessionStatus.DONE, SessionStatus.FAILED):
+        raise api_error(409, "当前状态不能继续对话", "invalid_state")
+
+    session_limit, daily_limit, concurrency = _limits(web.get_quota(user["id"]), settings)
+    daily_used = web.daily_cost(user["id"])
+    if daily_limit is not None and daily_used >= daily_limit:
+        raise api_error(429, f"今日成本已达上限 ¥{daily_limit:.2f}", "daily_quota_exceeded")
+    if jobs.running_for(user["id"]) >= concurrency:
+        raise api_error(429, f"并发任务已达上限 {concurrency}", "concurrency_exceeded")
+
+    round_budget = payload.max_cost_cny
+    if session_limit is not None:
+        round_budget = (
+            session_limit if round_budget is None else min(round_budget, session_limit)
+        )
+    if daily_limit is not None:
+        remaining = max(0.0, daily_limit - daily_used)
+        round_budget = remaining if round_budget is None else min(round_budget, remaining)
+    max_cost = None if round_budget is None else round(state.cost + round_budget, 6)
+
+    try:
+        jobs.submit_continue(
+            session_id=session_id,
+            owner_id=state.owner_id or user["id"],
+            profile=state.profile,
+            user_input=payload.input,
+            max_steps=state.step + payload.max_steps,
+            max_cost_cny=max_cost,
+        )
+    except RuntimeError:
+        raise api_error(409, "会话已在运行", "already_running") from None
+    return SessionAccepted(session_id=session_id)
 
 
 @router.get("/{session_id}", response_model=SessionOut)

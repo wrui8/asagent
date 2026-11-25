@@ -149,6 +149,7 @@ class GraphEngine(AgentRuntime):
         *,
         session_id: str | None = None,
         resume: bool = False,
+        continuation: bool = False,
         max_steps: int = 12,
         owner_id: str | None = None,
         state: SessionState | None = None,
@@ -166,13 +167,22 @@ class GraphEngine(AgentRuntime):
         else:
             if not user_input:
                 raise ValueError("新任务需要 user_input")
-            if state is None:
-                state = self.store.create_session(
-                    self.profile.name, user_input[:50], owner_id=owner_id
+            if continuation:
+                if state is None:
+                    if not session_id:
+                        raise ValueError("continuation 需要 session_id")
+                    state = self.store.load_state(session_id)
+                self._prepare_continuation(state)
+            else:
+                if state is None:
+                    state = self.store.create_session(
+                        self.profile.name, user_input[:50], owner_id=owner_id
+                    )
+                self._event(
+                    state, EventType.SESSION_CREATED, {"profile": self.profile.name}
                 )
             if not state.workspace:
                 state.workspace = str(self._resolved_workspace(state))
-            self._event(state, EventType.SESSION_CREATED, {"profile": self.profile.name})
             input_verdict = await self.guard.check(
                 GuardStage.INPUT, {"text": user_input}
             )
@@ -193,9 +203,13 @@ class GraphEngine(AgentRuntime):
                     {"stage": "input", **input_verdict.model_dump()},
                 )
             state.messages.append(Message(role="user", content=user_input))
-            self._event(state, EventType.USER_INPUT, {"text": user_input})
+            payload: dict = {"text": user_input}
+            if continuation:
+                payload["continuation"] = True
+            self._event(state, EventType.USER_INPUT, payload)
             self.store.save_state(state)
 
+        self._mark_round_start(state)
         await self._prepare_mcp()
         allowed_tools = list(
             dict.fromkeys([*self.profile.tool_names, *self._mcp_tool_names])
@@ -554,7 +568,11 @@ class GraphEngine(AgentRuntime):
                 self._event(
                     session,
                     EventType.FINAL,
-                    {"text": session.final_answer, "fallback": verdict.reason},
+                    {
+                        "text": session.final_answer,
+                        "fallback": verdict.reason,
+                        **self._round_metrics(session),
+                    },
                 )
                 ctx.done = True
                 return state
@@ -612,7 +630,11 @@ class GraphEngine(AgentRuntime):
 
         session.final_answer = final
         session.status = SessionStatus.DONE
-        self._event(session, EventType.FINAL, {"text": final})
+        self._event(
+            session,
+            EventType.FINAL,
+            {"text": final, **self._round_metrics(session)},
+        )
         ctx.done = True
         return state
 

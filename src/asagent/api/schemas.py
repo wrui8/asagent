@@ -80,6 +80,14 @@ class SessionCreateRequest(BaseModel):
     max_cost_cny: float | None = Field(None, gt=0, le=100)
 
 
+class SessionContinueRequest(BaseModel):
+    """在已有会话上追加一轮：步数与预算按本轮计算。"""
+
+    input: str = Field(min_length=1, max_length=8000)
+    max_steps: int = Field(12, ge=1, le=40)
+    max_cost_cny: float | None = Field(None, gt=0, le=100)
+
+
 class SessionOut(BaseModel):
     session_id: str
     profile: str

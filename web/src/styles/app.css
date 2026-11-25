@@ -1431,6 +1431,33 @@ textarea.input {
   color: var(--cyan);
   text-shadow: 0 0 10px rgba(0, 229, 255, 0.7);
 }
+/* 最终回答底部的本轮指标：与顶部「累计」形成对照，弱化但可读 */
+.msg-ai .body .round-stat {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 13px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--border2);
+  font-size: 10.5px;
+  letter-spacing: 0.3px;
+  color: var(--faint);
+}
+.msg-ai .body .round-stat:before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--grad);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
+}
+.msg-ai .body .round-stat b {
+  color: var(--muted);
+  font-weight: 700;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
 
 /* 审批 */
 .approval {
