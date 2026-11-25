@@ -1,5 +1,5 @@
 import { Redirect, useRouter } from "expo-router";
-import { useState } from "react";
+import { useRef, useState, type ComponentRef } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -15,6 +15,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { errorText } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { API_BASE } from "@/lib/config";
 import { colors, radius } from "@/lib/theme";
 
 export default function LoginScreen() {
@@ -26,11 +27,14 @@ export default function LoginScreen() {
   const [invite, setInvite] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const passwordField = useRef<ComponentRef<typeof TextInput>>(null);
+  const inviteField = useRef<ComponentRef<typeof TextInput>>(null);
+  const submitting = useRef(false);
 
   if (status === "authed") return <Redirect href="/" />;
 
   const submit = async () => {
-    if (busy) return;
+    if (submitting.current) return;
     const name = username.trim();
     if (!name || !password) {
       setError("请输入用户名和密码");
@@ -40,6 +44,7 @@ export default function LoginScreen() {
       setError("注册需要邀请码");
       return;
     }
+    submitting.current = true;
     setBusy(true);
     setError("");
     try {
@@ -47,8 +52,9 @@ export default function LoginScreen() {
       else await register(name, password, invite.trim());
       router.replace("/");
     } catch (err) {
-      setError(errorText(err, "登录失败"));
+      setError(errorText(err, mode === "register" ? "注册失败" : "登录失败"));
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   };
@@ -82,12 +88,16 @@ export default function LoginScreen() {
               placeholderTextColor={colors.faint}
               autoCapitalize="none"
               autoCorrect={false}
+              accessibilityLabel="用户名"
               textContentType="username"
               returnKeyType="next"
+              submitBehavior="submit"
+              onSubmitEditing={() => passwordField.current?.focus()}
             />
 
             <Text style={styles.label}>密码</Text>
             <TextInput
+              ref={passwordField}
               style={styles.input}
               value={password}
               onChangeText={setPassword}
@@ -96,10 +106,13 @@ export default function LoginScreen() {
               secureTextEntry
               autoCapitalize="none"
               autoCorrect={false}
-              textContentType="password"
+              accessibilityLabel="密码"
+              textContentType={mode === "register" ? "newPassword" : "password"}
               returnKeyType={mode === "register" ? "next" : "go"}
+              submitBehavior={mode === "register" ? "submit" : "blurAndSubmit"}
               onSubmitEditing={() => {
-                if (mode === "login") void submit();
+                if (mode === "register") inviteField.current?.focus();
+                else void submit();
               }}
             />
 
@@ -107,6 +120,7 @@ export default function LoginScreen() {
               <>
                 <Text style={styles.label}>邀请码</Text>
                 <TextInput
+                  ref={inviteField}
                   style={styles.input}
                   value={invite}
                   onChangeText={setInvite}
@@ -114,6 +128,7 @@ export default function LoginScreen() {
                   placeholderTextColor={colors.faint}
                   autoCapitalize="none"
                   autoCorrect={false}
+                  accessibilityLabel="邀请码"
                   returnKeyType="go"
                   onSubmitEditing={() => void submit()}
                 />
@@ -123,6 +138,7 @@ export default function LoginScreen() {
             {error ? <Text style={styles.error}>{error}</Text> : null}
 
             <Pressable
+              accessibilityRole="button"
               style={({ pressed }) => [
                 styles.primary,
                 (pressed || busy) && styles.primaryPressed,
@@ -140,6 +156,8 @@ export default function LoginScreen() {
             </Pressable>
 
             <Pressable
+              accessibilityRole="button"
+              disabled={busy}
               style={styles.switch}
               onPress={() => {
                 setMode(mode === "login" ? "register" : "login");
@@ -155,7 +173,7 @@ export default function LoginScreen() {
           </View>
 
           <Text style={styles.footer}>
-            服务地址已内置，无需配置 · agent.woaiwyj.xin
+            服务地址 · {API_BASE}
           </Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -221,7 +239,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     alignItems: "center",
     justifyContent: "center",
-    height: 48,
+    minHeight: 48,
+    paddingVertical: 10,
     marginTop: 20,
   },
   primaryPressed: { opacity: 0.75 },

@@ -1,7 +1,8 @@
-import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
+import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -27,6 +28,7 @@ import {
   profileLabel,
   statusMeta,
 } from "@/lib/format";
+import { approvalArgsPreview, reconcileApproval, startSessionPolling } from "@/lib/session-detail";
 import { colors, radius } from "@/lib/theme";
 import type { AgentEvent, Approval, Session } from "@/lib/types";
 
@@ -36,6 +38,12 @@ const TONE_COLOR: Record<string, string> = {
   ok: colors.ok,
   warn: colors.warn,
 };
+
+type SessionAction =
+  | { type: "approval"; callId: string; approved: boolean }
+  | { type: "cancel" };
+
+type UnconfirmedDecision = { callId: string; approved: boolean; error: string };
 
 export default function SessionScreen() {
   const { status } = useAuth();
@@ -57,7 +65,7 @@ export default function SessionScreen() {
       </View>
     );
   }
-  return <SessionDetail id={id} />;
+  return <SessionDetail key={id} id={id} />;
 }
 
 function SessionDetail({ id }: { id: string }) {
@@ -65,80 +73,114 @@ function SessionDetail({ id }: { id: string }) {
   const [session, setSession] = useState<Session | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
-  const [error, setError] = useState("");
-  const [deciding, setDeciding] = useState("");
-  const [canceling, setCanceling] = useState(false);
+  const [syncError, setSyncError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [action, setAction] = useState<SessionAction | null>(null);
+  const [checkingDecision, setCheckingDecision] = useState(false);
   const seqRef = useRef(0);
+  const polling = useRef<{ start: () => void; stop: () => void } | null>(null);
+  const inFlightAction = useRef<AbortController | null>(null);
+  const unconfirmed = useRef<UnconfirmedDecision | null>(null);
 
-  const refresh = useCallback(async () => {
-    const [next, nextApprovals, fresh] = await Promise.all([
-      fetchSession(id),
-      fetchApprovals(id),
-      fetchEvents(id, seqRef.current),
-    ]);
-    setSession(next);
-    setApprovals(nextApprovals);
-    if (fresh.length) {
-      const last = fresh[fresh.length - 1];
-      if (last.seq > seqRef.current) seqRef.current = last.seq;
-      setEvents((prev) => mergeEvents(prev, fresh));
-    }
-    setError("");
-    return next;
-  }, [id]);
+  useEffect(() => () => inFlightAction.current?.abort(), []);
 
-  useEffect(() => {
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = async () => {
-      try {
-        const current = await refresh();
-        if (!alive) return;
-        if (!statusMeta(current.status).terminal) {
-          timer = setTimeout(() => void tick(), 1500);
-        }
-      } catch (err) {
-        if (!alive) return;
-        setError(errorText(err, "会话加载失败"));
-        timer = setTimeout(() => void tick(), 4000);
+  useFocusEffect(
+    useCallback(() => {
+      let stopCurrentPoll: (() => void) | undefined;
+      let foreground = AppState.currentState == null || AppState.currentState === "active";
+      const stop = () => {
+        stopCurrentPoll?.();
+        stopCurrentPoll = undefined;
+      };
+      const start = () => {
+        stop();
+        if (!foreground || inFlightAction.current) return;
+        stopCurrentPoll = startSessionPolling({
+          initialCursor: seqRef.current,
+          loadSession: (signal) => fetchSession(id, signal),
+          loadApprovals: (signal) => fetchApprovals(id, signal),
+          loadEvents: (cursor, signal) => fetchEvents(id, cursor, signal),
+          onUpdate: (update) => {
+            seqRef.current = update.cursor;
+            setSession(update.session);
+            setEvents((previous) => mergeEvents(previous, update.events));
+            const attempt = unconfirmed.current;
+            let nextApprovals = update.approvals;
+            if (attempt) {
+              const outcome = reconcileApproval(attempt.callId, attempt.approved, update);
+              unconfirmed.current = null;
+              setCheckingDecision(false);
+              if (outcome === "pending") {
+                setActionError(`审批仍待处理，可以重试。${attempt.error}`);
+              } else {
+                nextApprovals = nextApprovals.filter((item) => item.call_id !== attempt.callId);
+                if (outcome === "other-decision") {
+                  setActionError("这项审批已有不同的决定，请查看执行轨迹。");
+                } else if (outcome === "unconfirmed") {
+                  setActionError("这项审批已从待处理列表移除，请在执行轨迹核对结果。");
+                }
+              }
+            }
+            setApprovals(nextApprovals);
+            setSyncError("");
+          },
+          onError: (error) => setSyncError(errorText(error, "会话加载失败")),
+        });
+      };
+
+      const subscription = AppState.addEventListener("change", (state) => {
+        foreground = state === "active";
+        if (foreground) start();
+        else stop();
+      });
+      polling.current = { start, stop };
+      start();
+
+      return () => {
+        subscription.remove();
+        stop();
+        polling.current = null;
+      };
+    }, [id]),
+  );
+
+  const performAction = async (next: SessionAction) => {
+    if (inFlightAction.current || unconfirmed.current) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    inFlightAction.current = controller;
+    polling.current?.stop();
+    setAction(next);
+    setActionError("");
+    try {
+      if (next.type === "approval") {
+        const remaining = await decideApproval(id, next.callId, next.approved, signal);
+        if (!signal.aborted) setApprovals(remaining);
+      } else {
+        await cancelSession(id, signal);
       }
-    };
-    void tick();
-    return () => {
-      alive = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [refresh]);
-
-  const decide = async (callId: string, approved: boolean) => {
-    if (deciding) return;
-    setDeciding(callId);
-    try {
-      setApprovals(await decideApproval(id, callId, approved));
-      await refresh();
-    } catch (err) {
-      setError(errorText(err, "审批提交失败"));
+    } catch (error) {
+      if (signal.aborted) return;
+      if (next.type === "approval") {
+        unconfirmed.current = { ...next, error: errorText(error, "审批提交失败") };
+        setCheckingDecision(true);
+      } else {
+        setActionError(errorText(error, "取消失败"));
+      }
     } finally {
-      setDeciding("");
-    }
-  };
-
-  const cancel = async () => {
-    if (canceling) return;
-    setCanceling(true);
-    try {
-      await cancelSession(id);
-      await refresh();
-    } catch (err) {
-      setError(errorText(err, "取消失败"));
-    } finally {
-      setCanceling(false);
+      if (!signal.aborted) {
+        inFlightAction.current = null;
+        setAction(null);
+        polling.current?.start();
+      }
     }
   };
 
   const meta = session ? statusMeta(session.status) : null;
   const running =
     session?.status === "running" || session?.status === "awaiting_approval";
+  const canceling = action?.type === "cancel";
+  const controlsDisabled = action !== null || checkingDecision;
   const pending = approvals.filter((item) => item.status === "pending");
   const inputs = events.filter((event) => event.type === "user_input");
   const timeline = events
@@ -157,9 +199,9 @@ function SessionDetail({ id }: { id: string }) {
     : "加载中";
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
+    <SafeAreaView style={styles.screen}>
       <View style={styles.topBar}>
-        <Pressable onPress={() => router.back()} style={styles.back}>
+        <Pressable accessibilityRole="button" onPress={() => router.dismissTo("/")} style={styles.back}>
           <Text style={styles.backText}>‹ 会话</Text>
         </Pressable>
         <View style={styles.topMid}>
@@ -171,7 +213,11 @@ function SessionDetail({ id }: { id: string }) {
         <View style={styles.back} />
       </View>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {syncError ? <Text style={styles.error}>{syncError}</Text> : null}
+      {actionError ? <Text style={styles.error}>{actionError}</Text> : null}
+      {checkingDecision ? (
+        <Text style={styles.syncStatus} accessibilityLiveRegion="polite">正在核对服务器上的审批结果…</Text>
+      ) : null}
 
       {!session ? (
         <View style={styles.center}>
@@ -214,47 +260,19 @@ function SessionDetail({ id }: { id: string }) {
           {pending.length ? (
             <View style={styles.approval}>
               <Text style={styles.approvalTitle}>需要你的批准</Text>
-              {pending.map((item) => {
-                const args = JSON.stringify(item.args ?? {}, null, 2);
-                return (
-                  <View key={item.call_id} style={styles.approvalItem}>
-                    <Text style={styles.approvalTool}>
-                      {item.tool} · 权限 {item.permission}
-                    </Text>
-                    <Text style={styles.approvalArgs} numberOfLines={10}>
-                      {args.length > 600 ? `${args.slice(0, 600)}…` : args}
-                    </Text>
-                    <View style={styles.approvalActions}>
-                      <Pressable
-                        style={({ pressed }) => [
-                          styles.reject,
-                          (pressed || deciding === item.call_id) &&
-                            styles.btnPressed,
-                        ]}
-                        disabled={deciding === item.call_id}
-                        onPress={() => void decide(item.call_id, false)}
-                      >
-                        <Text style={styles.rejectText}>拒绝</Text>
-                      </Pressable>
-                      <Pressable
-                        style={({ pressed }) => [
-                          styles.approve,
-                          (pressed || deciding === item.call_id) &&
-                            styles.btnPressed,
-                        ]}
-                        disabled={deciding === item.call_id}
-                        onPress={() => void decide(item.call_id, true)}
-                      >
-                        {deciding === item.call_id ? (
-                          <ActivityIndicator color="#04121a" size="small" />
-                        ) : (
-                          <Text style={styles.approveText}>批准</Text>
-                        )}
-                      </Pressable>
-                    </View>
-                  </View>
-                );
-              })}
+              {pending.map((item) => (
+                <ApprovalCard
+                  key={item.call_id}
+                  item={item}
+                  disabled={controlsDisabled}
+                  submitting={action?.type === "approval" && action.callId === item.call_id}
+                  onDecide={(approved) => void performAction({
+                    type: "approval",
+                    callId: item.call_id,
+                    approved,
+                  })}
+                />
+              ))}
             </View>
           ) : null}
 
@@ -309,8 +327,9 @@ function SessionDetail({ id }: { id: string }) {
           {running ? (
             <Pressable
               style={({ pressed }) => [styles.cancel, (pressed || canceling) && styles.btnPressed]}
-              onPress={() => void cancel()}
-              disabled={canceling}
+              accessibilityRole="button"
+              disabled={controlsDisabled}
+              onPress={() => void performAction({ type: "cancel" })}
             >
               <Text style={styles.cancelText}>
                 {canceling ? "正在取消…" : "取消本次任务"}
@@ -320,6 +339,56 @@ function SessionDetail({ id }: { id: string }) {
         </ScrollView>
       )}
     </SafeAreaView>
+  );
+}
+
+function ApprovalCard({ item, disabled, submitting, onDecide }: {
+  item: Approval;
+  disabled: boolean;
+  submitting: boolean;
+  onDecide: (approved: boolean) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const { full, preview } = approvalArgsPreview(item.args ?? {});
+
+  return (
+    <View style={styles.approvalItem}>
+      <Text style={styles.approvalTool}>
+        {item.tool} · 权限 {item.permission}
+      </Text>
+      <Text style={styles.approvalArgs} selectable={expanded}>
+        {expanded ? full : preview}
+      </Text>
+      {preview !== full ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          style={styles.expandArgs}
+          onPress={() => setExpanded((value) => !value)}
+        >
+          <Text style={styles.expandArgsText}>{expanded ? "收起参数" : "查看完整参数"}</Text>
+        </Pressable>
+      ) : null}
+      <View style={styles.approvalActions}>
+        {submitting ? <ActivityIndicator color={colors.accent2} size="small" /> : null}
+        <Pressable
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.reject, (pressed || disabled) && styles.btnPressed]}
+          disabled={disabled}
+          onPress={() => onDecide(false)}
+        >
+          <Text style={styles.rejectText}>拒绝</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.approve, (pressed || disabled) && styles.btnPressed]}
+          disabled={disabled}
+          onPress={() => onDecide(true)}
+        >
+          <Text style={styles.approveText}>批准</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -351,6 +420,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 10,
   },
+  syncStatus: { color: colors.muted, paddingHorizontal: 20, paddingTop: 10 },
   scroll: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 40, gap: 12 },
   statusCard: {
     backgroundColor: colors.card,
@@ -404,8 +474,11 @@ const styles = StyleSheet.create({
     padding: 10,
     marginTop: 8,
   },
+  expandArgs: { alignSelf: "flex-start", justifyContent: "center", minHeight: 44 },
+  expandArgsText: { color: colors.accent2, fontSize: 13, fontWeight: "700" },
   approvalActions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "flex-end",
     gap: 10,
     marginTop: 12,

@@ -60,7 +60,7 @@ function SessionList() {
     router.push({ pathname: "/session/[id]", params: { id } });
 
   return (
-    <SafeAreaView style={styles.screen} edges={["top", "left", "right"]}>
+    <SafeAreaView style={styles.screen}>
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.eyebrow}>MISSION CONTROL</Text>
@@ -178,7 +178,7 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   cardPressed: { opacity: 0.75 },
-  cardTop: { flexDirection: "row", alignItems: "center", gap: 8 },
+  cardTop: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
   profileTag: {
     backgroundColor: colors.raised,
     borderRadius: 6,
