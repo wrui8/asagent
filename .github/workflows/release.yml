@@ -72,6 +72,7 @@ jobs:
           name: asagent-windows-nsis
           path: |
             desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
             desktop/src-tauri/target/release/bundle/nsis/*.nsis.zip
             desktop/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
           if-no-files-found: error
@@ -185,11 +186,18 @@ jobs:
 
           version = os.environ["VERSION"].lstrip("v")
           root = pathlib.Path("dist/asagent-windows-nsis")
+          # Tauri <= 2.0 产出 *.nsis.zip；2.1+ 直接以 setup.exe 作为更新包，
+          # 签名文件为 *.exe.sig。两种布局都兼容，避免发版因命名变化失败。
           zips = sorted(root.glob("*.nsis.zip"))
-          if not zips:
-              raise SystemExit("no .nsis.zip updater artifact found")
-          archive = zips[0]
-          signature = archive.with_name(archive.name + ".sig")
+          if zips:
+              archive = zips[0]
+              signature = archive.with_name(archive.name + ".sig")
+          else:
+              exes = sorted(root.glob("*-setup.exe")) or sorted(root.glob("*.exe"))
+              if not exes:
+                  raise SystemExit("no NSIS installer or .nsis.zip updater artifact found")
+              archive = exes[0]
+              signature = archive.with_name(archive.name + ".sig")
           if not signature.exists():
               raise SystemExit(f"missing updater signature: {signature}")
 
@@ -220,6 +228,7 @@ jobs:
         with:
           files: |
             dist/asagent-windows-nsis/*.exe
+            dist/asagent-windows-nsis/*.exe.sig
             dist/asagent-windows-nsis/*.nsis.zip
             dist/asagent-windows-nsis/*.nsis.zip.sig
             dist/asagent-android-apk/*.apk

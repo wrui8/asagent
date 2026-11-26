@@ -465,7 +465,9 @@ Tauri updater 使用 minisign 密钥校验更新包。密钥已在本机生成�
 
 发布后：
 
-- Release 资产包含 `*.exe`、`*.nsis.zip`、`*.nsis.zip.sig` 与 `latest.json`
+- Release 资产包含 `*.exe`、更新签名与 `latest.json`。Tauri CLI 2.1+ 直接以
+  `*-setup.exe` 作为 NSIS 更新包，签名为 `*.exe.sig`；更早版本则是
+  `*.nsis.zip` + `*.nsis.zip.sig`，发布脚本两种布局都兼容
 - 已安装客户端在「MCP 与系统」页点击「检查更新」；updater 读取
   `https://github.com/wrui8/asagent/releases/latest/download/latest.json`，
   校验签名后下载安装，应用退出并由安装程序完成升级
